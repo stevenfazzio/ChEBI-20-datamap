@@ -1,4 +1,4 @@
-.PHONY: install lint format test fetch enrich embed umap label structure visualize preview map map-structure serve clean
+.PHONY: install lint format test fetch enrich embed umap label structure rhea visualize preview map map-structure serve clean
 
 install:
 	uv sync --extra dev
@@ -38,6 +38,10 @@ label:
 structure:
 	uv run python pipeline/07_structure_agreement.py --layout $(LAYOUT)
 
+# Layout-independent; both maps read its output. Fetches Rhea's public files once into data/raw/rhea/.
+rhea:
+	uv run python pipeline/08_rhea.py
+
 # Run before visualize: stage 05 uses the PNG as the Open Graph image when it exists.
 preview:
 	uv run python pipeline/06_social_preview.py --layout $(LAYOUT)
@@ -45,7 +49,7 @@ preview:
 visualize:
 	uv run python pipeline/05_visualize.py --layout $(LAYOUT)
 
-map: embed umap label structure preview visualize
+map: embed umap label structure rhea preview visualize
 
 # The structure map: the same stages on the fingerprint layout, into docs/morgan/.
 map-structure:

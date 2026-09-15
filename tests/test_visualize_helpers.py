@@ -69,7 +69,7 @@ def test_nearest_line_drops_weak_neighbours_and_escapes():
     )
 
 
-def test_build_point_data_includes_the_nearest_line_only_when_present():
+def test_build_point_data_adds_extra_lines_only_where_present():
     corpus = pd.DataFrame(
         {
             "cid": [1, 2],
@@ -83,28 +83,33 @@ def test_build_point_data_includes_the_nearest_line_only_when_present():
             "pubchem_iUPACName": ["ethane", None],
         }
     )
-    out = viz.build_point_data(corpus, pd.Series(["Nearest by structure: X (0.50)", ""]))
-    assert "Nearest by structure: X (0.50)" in out["body"][0]
-    assert "Nearest by structure" not in out["body"][1]
-    assert "Nearest by structure" not in viz.build_point_data(corpus)["body"][0]  # the line is optional
+    lines = [pd.Series(["Nearest by structure: X (0.50)", ""]), None, pd.Series(["", "Rhea: 2 reactions"])]
+    out = viz.build_point_data(corpus, lines)
+    assert "Nearest by structure: X (0.50)" in out["body"][0] and "Rhea" not in out["body"][0]
+    assert "Rhea: 2 reactions" in out["body"][1] and "Nearest" not in out["body"][1]
+    assert (
+        "margin-top:6px"
+        not in viz.build_point_data(corpus)["body"][0].split("</div>", 3)[-1].split("font-size:11px")[0]
+    )
 
 
-def test_build_point_data_cross_line_is_optional_and_escaped():
-    corpus = pd.DataFrame(
+def test_cross_line_escapes_and_skips_unlabelled():
+    out = viz.cross_line(pd.Series(["Acids & Esters", "Unlabelled", ""]), "Structural family")
+    assert out.tolist() == ["Structural family: Acids &amp; Esters", "", ""]
+    assert viz.cross_line(None, "x") is None
+
+
+def test_rhea_line_hub_partners_and_more_count():
+    rhea = pd.DataFrame(
         {
-            "cid": [1, 2],
-            "name": ["A", "B"],
-            "split": ["train", "test"],
-            "description": ["The molecule is a thing.", "The molecule is another."],
-            "pubchem_molecularFormula": ["C2H6", None],
-            "pubchem_molecularWeight": [30.07, None],
-            "pubchem_charge": [0, None],
-            "pubchem_xLogP": [1.0, None],
-            "pubchem_iUPACName": ["ethane", None],
+            "n_reactions": [1398, 12, 1, 0],
+            "is_hub": [True, False, False, False],
+            "partner_cids": [[], [10, 11, 12, 13, 14], [], []],
         }
     )
-    out = viz.build_point_data(
-        corpus, cross=pd.Series(["Acids & Esters", "Unlabelled"]), cross_label="Structural family"
-    )
-    assert "Structural family: Acids &amp; Esters" in out["body"][0]
-    assert "Structural family" not in out["body"][1]  # Unlabelled shows nothing
+    names = {10: "Aspirin", 11: "R&D", 12: "C", 13: "D", 14: "E"}
+    out = viz.rhea_line(rhea, names).tolist()
+    assert out[0] == "Rhea: 1,398 reactions (cofactor hub)"
+    assert out[1] == "Rhea: 12 reactions · partners: Aspirin · R&amp;D · C (+2 more)"
+    assert out[2] == "Rhea: 1 reaction"
+    assert out[3] == ""

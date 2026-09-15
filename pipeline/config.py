@@ -25,6 +25,9 @@ PATHS = {
     "pubchem_cache": DATA_DIR / "pubchem_cache",  # stage 01: one JSON per PubChem batch (resume unit)
     "corpus": DATA_DIR / "corpus.parquet",  # stage 01: molecules + PubChem + derived fields + embed_text
     "corpus_meta": DATA_DIR / "corpus_meta.json",
+    "rhea": DATA_DIR / "rhea.parquet",  # stage 08: reaction context per molecule; layout-independent
+    "rhea_meta": DATA_DIR / "rhea_meta.json",
+    "rhea_manifest": RAW_DIR / "rhea" / "_manifest.json",
 }
 
 # ── PubChem PUG REST ─────────────────────────────────────────────────────────
@@ -44,6 +47,32 @@ PUBCHEM_BATCH_SIZE = 200  # CIDs per POST; PUG REST accepts a few hundred comfor
 PUBCHEM_MIN_INTERVAL_S = 0.25  # usage policy: at most 5 requests per second, 400 per minute
 PUBCHEM_COMPOUND_URL = "https://pubchem.ncbi.nlm.nih.gov/compound/{cid}"
 PUBCHEM_IMAGE_URL = "https://pubchem.ncbi.nlm.nih.gov/image/imgsrv.fcgi?cid={cid}&t=l"  # 300 px PNG, CORS open
+
+# ── Rhea (stage 08) ──────────────────────────────────────────────────────────
+# The expert-curated reaction database whose participants are ChEBI entities: measured biochemistry for a
+# ChEBI-derived corpus. Public files, no key. Molecules match Rhea participants by the connectivity layer of the
+# InChIKey, since ChEBI-20 lists many compounds in both neutral and charged forms and Rhea uses the pH 7.3 species.
+RHEA_BASE_URL = "https://ftp.expasy.org/databases/rhea"
+RHEA_FILES = {  # local name -> path under RHEA_BASE_URL
+    "rhea-release.properties": "rhea-release.properties",
+    "rhea-chebi-smiles.tsv": "tsv/rhea-chebi-smiles.tsv",  # every participant with its SMILES
+    "rhea-reactions.txt.gz": "txt/rhea-reactions.txt.gz",  # EQUATION lines list participants by ChEBI id
+    "rhea2ec.tsv": "tsv/rhea2ec.tsv",  # reaction -> EC number
+}
+RHEA_RAW_DIR = RAW_DIR / "rhea"
+# A participant in more master reactions than this is a cofactor hub (H+, water, O2, CoA, ATP, NAD ...; 62 entities
+# at 100 on the 2026-09 release). Hubs count as "in Rhea" but never as anyone's partner: they would link everything.
+RHEA_HUB_MIN_REACTIONS = 100
+RHEA_PARTNERS_SHOWN = 3  # partners named in the hovercard; the parquet keeps them all, ranked
+EC_CLASSES = {
+    "1": "Oxidoreductase",
+    "2": "Transferase",
+    "3": "Hydrolase",
+    "4": "Lyase",
+    "5": "Isomerase",
+    "6": "Ligase",
+    "7": "Translocase",
+}
 
 # ── HTTP ─────────────────────────────────────────────────────────────────────
 USER_AGENT = "ChEBI-20-datamap/0.1 (research datamap; github.com/stevenfazzio/ChEBI-20-datamap)"

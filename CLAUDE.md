@@ -21,13 +21,15 @@ uv run python pipeline/02_embed.py          # Qwen3-Embedding-4B on the descript
 uv run python pipeline/03_reduce_umap.py    # UMAP -> 2-d, fixed seed -> data/umap_coords.npz
 uv run python pipeline/04_label_topics.py   # Toponymy + Claude region names -> data/labels.parquet
 uv run python pipeline/07_structure_agreement.py # map neighbourhoods scored by the other similarity -> data/structure_agreement.parquet
+uv run python pipeline/08_rhea.py           # Rhea reactions per molecule -> data/rhea.parquet (layout-independent; both maps read it)
 uv run python pipeline/06_social_preview.py # static card -> docs/social-preview.png (run before 05)
 uv run python pipeline/05_visualize.py      # DataMapPlot -> docs/index.html + docs/chebi20_*.zip
 ```
 
 Stages 03-07 take `--layout text|morgan`; `morgan` is the structure map (Morgan fingerprints, Jaccard UMAP, `_morgan`
-file names, `docs/morgan/`). `make fetch|enrich|embed|umap|label|structure|preview|visualize|map` wrap the same
-commands (`map` runs 02-07 for the description map; `make map-structure` runs 03-07 with `LAYOUT=morgan`); `make lint`,
+file names, `docs/morgan/`). `make fetch|enrich|embed|umap|label|structure|rhea|preview|visualize|map` wrap the same
+commands (`map` runs 02-08 for the description map; `make map-structure` runs 03-07 with `LAYOUT=morgan` and assumes
+`data/rhea.parquet` exists); `make lint`,
 `make test`, `make serve` (the map fetches its data files relative to its origin, so it must be served,
 never opened via `file://`). Useful flags: `01_enrich.py --limit 50` and `02_embed.py --limit 200` are
 smoke tests that write nothing; `04_label_topics.py --sweep` reports cluster counts per layer at several granularities with no LLM calls. Stage 04
@@ -69,6 +71,8 @@ data/topic_names.json                  region names per layer; cluster_tree.json
 data/structure_agreement.parquet       cid + coherence, similarity of map/own/other-space neighbours, overlaps, 3 nearest in the other space
 data/structure_agreement_meta.json     fingerprint spec, random floor, summary tables, per-region coherence, spread over the other map
 data/*_morgan.*                        the structure map's labels, names, tree, meta and agreement files (same schemas)
+data/raw/rhea/                         Rhea's public files as fetched (stage 08; _manifest.json has the release and checksums)
+data/rhea.parquet                      cid + in_rhea, matched ChEBI ids, n_reactions, is_hub, ec_class, ranked partner cids; rhea_meta.json the run record
 docs/morgan/index.html                 the structure map and its own data zips and social-preview.png
 docs/index.html                        the map; docs/chebi20_{point,meta,label}_data*.zip its externalised data
 ```
@@ -148,6 +152,16 @@ refetch it. Stage 01 skips any PubChem batch file that already exists.
   112/29/7 "families") was superseded by this and its `data/families*` files were deleted. A Murcko-scaffold
   colormap was measured and dropped: 7,619 distinct scaffolds, 25% acyclic, benzene 6.6%, and the next 14
   scaffolds together under 12%, so "Other" would have been most of the map.
+- **Rhea overlay, not a third map (2026-09-15).** Property space (RDKit descriptors, PCA 30) and the Rhea reaction
+  network were both measured as candidate third axes. Property neighbourhoods overlap fingerprint ones at 0.31
+  and text ones at 0.18 with a partner Tanimoto of 0.45: a smoothed structure space organised by size and
+  lipophilicity, not a new axis. Rhea covers 40% of the corpus (InChIKey connectivity-layer match, release 142);
+  one-hop reaction partners are structural (Tanimoto 0.43-0.48) and only two hops out or at shared-enzyme scale
+  does the network diverge from structure (Tanimoto 0.26-0.29). Decision: no third map; Rhea becomes stage 08 and
+  an overlay on both maps (enzyme-class colormap with two greys, reaction-count and partner hover line), plus the
+  referee number for the README: 29% of partners sit among a molecule's 15 fingerprint neighbours against 13%
+  among its description neighbours. Hubs (> 100 reactions) are never partners. The connectivity match also merges
+  isotopologues (Glycine-d5 matches glycine) and charge states, by design.
 
 ## Data facts (ChEBI-20 as published, fetched 2026-09-15)
 

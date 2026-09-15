@@ -15,9 +15,10 @@ its biological roles, and where it was isolated. This map embeds those descripti
 two dimensions, so molecules that ChEBI describes similarly sit near each other. Hover for the compound
 name, formula, weight, charge, XLogP, structure drawing, full description, structural family and the two
 molecules nearest to it by chemical structure; click to open the PubChem page; search by name, formula, CID,
-family or any phrase in the description. The colour menu switches between the region colouring and eight metadata views: metabolite
-organism, first-stated biological role, structural family, formal charge, molecular weight, XLogP, structural
-coherence and dataset split.
+family or any phrase in the description. The colour menu switches between the region colouring and nine metadata views: metabolite
+organism, first-stated biological role, enzyme class from Rhea, structural family, formal charge, molecular
+weight, XLogP, structural coherence and dataset split. Molecules that take part in a Rhea reaction also get a
+hovercard line with their reaction count and reaction partners.
 
 The second map lays the same molecules out by Morgan fingerprints of their SMILES, so molecules with similar
 substructures sit near each other regardless of what ChEBI says about them, and its regions are named for the
@@ -36,11 +37,12 @@ scores are explained below.
 | 03 | `pipeline/03_reduce_umap.py` | UMAP to two dimensions with a fixed seed: of the embeddings, or (`--layout morgan`) of Morgan fingerprints of the SMILES ([RDKit](https://www.rdkit.org/)) under the Jaccard metric. |
 | 04 | `pipeline/04_label_topics.py` | [Toponymy](https://github.com/TutteInstitute/toponymy) clusters a layout and names the regions with Claude; for the structure map the namer also reads IUPAC names and is told to name shared structure. |
 | 07 | `pipeline/07_structure_agreement.py` | Scores each molecule's map neighbours by the similarity the map does not show (fingerprints for the description map, descriptions for the structure map) and finds its nearest neighbours in that space. |
+| 08 | `pipeline/08_rhea.py` | Fetches [Rhea](https://www.rhea-db.org/) and matches every molecule to its reactions: reaction count, cofactor hubs, dominant enzyme class, reaction partners inside the corpus. |
 | 05 | `pipeline/05_visualize.py` | [DataMapPlot](https://github.com/TutteInstitute/datamapplot) renders a map into `docs/` or `docs/morgan/`, with the other map's regions as a colour view. |
 
 ```bash
 uv sync --extra dev
-make fetch enrich embed umap label structure visualize   # or: make map (stages 02-07, the description map)
+make fetch enrich embed umap label structure rhea visualize   # or: make map (stages 02-08, the description map)
 make map-structure                                      # the same stages on the fingerprint layout -> docs/morgan/
 make serve                                              # http://127.0.0.1:8765/ and /morgan/
 ```
@@ -136,10 +138,45 @@ structure map's 15 coarsest regions as **structural family** (a third of molecul
 enough to name and are shown in grey), and the structure map shows the description map's 20 coarsest regions
 as **description-map region**.
 
+## Measured biochemistry: what Rhea adds
+
+Both maps are built from what a molecule is or how it is described. [Rhea](https://www.rhea-db.org/), the
+expert-curated reaction database whose participants are ChEBI entities, adds what a molecule does. Stage 08 matches
+ChEBI-20 to Rhea by the connectivity layer of the InChIKey (ChEBI-20 lists many compounds in both neutral and
+charged forms) and, over Rhea's 18,611 master reactions, records each molecule's reaction count, whether it is a
+cofactor hub (a participant in more than 100 reactions: water, ATP, NAD, CoA and 58 others), the commonest enzyme
+class among its reactions, and its reaction partners inside the corpus, other participants in the same reactions
+with hubs and other charge states of the same compound excluded.
+
+| | Molecules |
+|---|---|
+| In at least one Rhea reaction | 13,314 (40%) |
+| With a reaction partner inside ChEBI-20 | 12,402 (38%) |
+| Cofactor hubs | 192 |
+
+The **enzyme class** colour view shows the dominant class on both maps, with two greys: outside Rhea, and in Rhea
+but in reactions that carry no EC number. The hovercard line gives the reaction count and up to three partners,
+ranked by reactions shared.
+
+Reaction partners also settle a question neither map could answer alone, since roles are in the descriptions and
+properties follow from structure. A reaction partner is one enzymatic step away, and the fingerprint map predicts
+that step far better than the description map does:
+
+| Where a molecule's reaction partners turn up | Share of partners |
+|---|---|
+| Among its 15 nearest fingerprint neighbours | 29% |
+| Among its 15 nearest description neighbours | 13% |
+
+Partners have a mean Tanimoto similarity of 0.43 to each other (random pairs 0.10) and a description cosine of 0.91
+(random 0.80). Two hops along the network the structural similarity halves, so the reaction context carries
+information the fingerprints do not, but only at pathway scale and only for the two fifths of the corpus that Rhea
+covers, which is why it is an overlay on both maps rather than a third map.
+
 ## Data and credits
 
 - ChEBI-20 by Carl Edwards, Tuan Lai, Kevin Ros, Garrett Honke, Kyunghyun Cho and Heng Ji, *Translation
   between Molecules and Natural Language* (EMNLP 2022), derived from [ChEBI](https://www.ebi.ac.uk/chebi/)
   (CC BY 4.0) and [PubChem](https://pubchem.ncbi.nlm.nih.gov/).
 - Compound names, properties and structure drawings come from PubChem's PUG REST and image services.
+- Reaction context comes from [Rhea](https://www.rhea-db.org/) release 142 (CC BY 4.0).
 - Built with Qwen3-Embedding, UMAP, Toponymy, DataMapPlot, RDKit and Claude.

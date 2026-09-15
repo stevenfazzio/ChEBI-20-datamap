@@ -2,8 +2,9 @@
 for the structure map (`--layout morgan`).
 
 Reads the corpus, the layout, its labels and its stage 07 agreement file (the coherence colormap and the
-nearest-in-the-other-space hover line), plus the other map's labels for a cross colormap and hover line (the text
-map shows each molecule's structural family, the structure map its description-map region). The data files are
+nearest-in-the-other-space hover line), the other map's labels for a cross colormap and hover line (the text map
+shows each molecule's structural family, the structure map its description-map region), and stage 08's Rhea
+context (an enzyme-class colormap and a reaction-partners hover line, the same on both maps). The data files are
 written beside the HTML and fetched relative to it, so the map must be served over HTTP (`make serve`), never
 opened via file://. Open Graph tags are added to the page head so a shared link renders as a card, and the
 subtitle links to the other map.
@@ -153,6 +154,39 @@ def load_cross_labels(other_files: dict, cids: np.ndarray) -> pd.Series | None:
     return labels[col].fillna("Unlabelled")
 
 
+def load_rhea(cids: np.ndarray) -> pd.DataFrame:
+    if not config.PATHS["rhea"].exists():
+        raise SystemExit(f"{config.PATHS['rhea']} is missing: run stage 08 (`make rhea`) before rendering")
+    rhea = pd.read_parquet(config.PATHS["rhea"])
+    assert (rhea["cid"].to_numpy() == cids).all(), "rhea.parquet is not aligned with corpus.parquet"
+    return rhea
+
+
+def rhea_line(rhea: pd.DataFrame, names: dict) -> pd.Series:
+    """One hover line per molecule in Rhea: its reaction count and its first partners, or "" outside Rhea."""
+
+    def line(n_reactions, is_hub, partner_cids) -> str:
+        if not n_reactions:
+            return ""
+        head = f"Rhea: {n_reactions:,} reaction{'s' if n_reactions != 1 else ''}"
+        if is_hub:
+            return head + " (cofactor hub)"
+        shown = list(partner_cids[: config.RHEA_PARTNERS_SHOWN])
+        if not shown:
+            return head
+        more = len(partner_cids) - len(shown)
+        return head + " · partners: " + " · ".join(esc(names[c]) for c in shown) + (f" (+{more} more)" if more else "")
+
+    return pd.Series([line(n, h, p) for n, h, p in zip(rhea["n_reactions"], rhea["is_hub"], rhea["partner_cids"])])
+
+
+def cross_line(cross: pd.Series | None, label: str) -> pd.Series | None:
+    """The other map's region as a hover line, "" where unlabelled."""
+    if cross is None:
+        return None
+    return pd.Series([f"{label}: {esc(v)}" if v and v != "Unlabelled" else "" for v in cross])
+
+
 def nearest_line(structure: pd.DataFrame, names: dict, label: str, min_similarity: float) -> pd.Series:
     """One hover line per molecule naming its nearest neighbours in the other space, or "" where none is close
     enough. Tiny molecules have near-empty fingerprints and their nearest neighbours by structure are noise, so
@@ -167,21 +201,17 @@ def nearest_line(structure: pd.DataFrame, names: dict, label: str, min_similarit
     return pd.Series([line(c, s) for c, s in pairs])
 
 
-def build_point_data(
-    corpus: pd.DataFrame, nearest: pd.Series | None = None, cross: pd.Series | None = None, cross_label: str = ""
-) -> pd.DataFrame:
+def build_point_data(corpus: pd.DataFrame, lines: list[pd.Series] = ()) -> pd.DataFrame:
     """One HTML column per molecule (`body`) that is both the hovercard and the search text, plus the CID.
 
     Storing the description once matters: the hover data ships as one gzipped JSON file, and a separate
     search column would double it. Search is a substring match over the column, so the identifiers line at
-    the bottom of the card is what makes name, IUPAC name, formula and CID searchable. The nearest-neighbour
-    line (`nearest`, from stage 07) and the other map's region (`cross`) are searchable for the same reason: a
-    name also finds the molecules nearest to it, and a region name finds its members.
+    the bottom of the card is what makes name, IUPAC name, formula and CID searchable. `lines` are extra
+    small-print lines under the description (the other map's region, the nearest molecules in the other space,
+    the Rhea reaction context), "" where a molecule has none; they are searchable for the same reason.
     """
-    corpus = corpus.assign(
-        nearest="" if nearest is None else nearest.to_numpy(),
-        cross="" if cross is None else cross.replace("Unlabelled", "").to_numpy(),
-    )
+    lines = [ln.to_numpy() for ln in lines if ln is not None]
+    corpus = corpus.assign(extra=[[ln[i] for ln in lines if ln[i]] for i in range(len(corpus))])
 
     def facts_line(row) -> str:
         parts = [formula_html(row["pubchem_molecularFormula"])]
@@ -215,11 +245,7 @@ def build_point_data(
             f'<div style="font-size:12.5px;line-height:1.45;margin-top:8px;">{esc(row["description"])}</div>'
             + "".join(
                 f'<div style="font-size:11.5px;color:#57606a;margin-top:6px;line-height:1.5;">{line}</div>'
-                for line in (
-                    f"{cross_label}: {esc(row['cross'])}" if row["cross"] else "",
-                    row["nearest"],
-                )
-                if line
+                for line in row["extra"]
             )
             + '<div style="font-size:11px;color:#8b949e;margin-top:6px;line-height:1.5;overflow-wrap:anywhere;">'
             + "<br>".join(ids)
@@ -293,9 +319,16 @@ def main() -> None:
             "kind": "continuous",
             "cmap": "plasma",
         }
+    rhea = load_rhea(cids)
     names = dict(zip(cids, corpus["name"]))
-    nearest = nearest_line(structure, names, nearest_label, spec["neighbour_min_similarity"])
-    extra = build_point_data(corpus, nearest, cross, cross_label)
+    extra = build_point_data(
+        corpus,
+        [
+            cross_line(cross, cross_label),
+            nearest_line(structure, names, nearest_label, spec["neighbour_min_similarity"]),
+            rhea_line(rhea, names),
+        ],
+    )
 
     organism_meta, organism_vals = categorical(
         "organism",
@@ -309,6 +342,16 @@ def main() -> None:
         top_n(corpus["primary_role"], config.ROLE_TOP_N, "Other role", "None stated"),
         neutral="None stated",
     )
+    # Stage 08: the commonest enzyme class among the Rhea reactions a molecule takes part in. Two greys: outside
+    # Rhea, and in Rhea but in reactions without an EC number (38% of them), so the colours mean enzyme classes.
+    ec_raw = rhea["ec_class"].to_numpy()
+    ec_meta, ec_vals = categorical(
+        "ec_class",
+        f"Enzyme class (Rhea; {int(rhea['in_rhea'].sum()):,} molecules in a reaction)",
+        np.where(ec_raw == "", "Not in Rhea", np.where(ec_raw == "Unassigned", "In Rhea, no EC class", ec_raw)),
+        neutral="Not in Rhea",
+    )
+    ec_meta["color_mapping"]["In Rhea, no EC class"] = "#8c8c8c"
     charge_vals = corpus["pubchem_charge"].map(charge_bucket).to_numpy()
     charge_meta = {
         "field": "charge",
@@ -331,8 +374,8 @@ def main() -> None:
     }
     # Stage 07: how far this map's neighbourhoods agree with the other space; see config.COHERENCE_MIN_SPAN.
     coherence_vals = structure["coherence"].to_numpy(dtype=float)
-    rawdata = [organism_vals, role_vals]
-    metadata = [organism_meta, role_meta]
+    rawdata = [organism_vals, role_vals, ec_vals]
+    metadata = [organism_meta, role_meta, ec_meta]
     if cross is not None:
         # The other map's regions coloured onto this one: a region that this map scatters shows up sprayed about.
         n_total = cross.nunique() - 1
