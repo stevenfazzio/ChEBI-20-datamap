@@ -1,0 +1,46 @@
+[project]
+name = "chebi-20-datamap"
+version = "0.1.0"
+description = "Interactive datamap of the ChEBI-20 molecule-description dataset"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "requests>=2.32",
+    "pandas>=2.2",
+    "pyarrow>=16",
+    # numba (via umap-learn) caps numpy; pin explicitly so the resolver does not
+    # backtrack to an old numba that cannot build on modern Python.
+    "numpy>=1.26,<2.3",
+    "tqdm>=4.66",
+    "python-dotenv>=1.0",
+    "scikit-learn>=1.5",
+    "umap-learn>=0.5.10",
+    "sentence-transformers>=3.0",
+    "torch>=2.3",
+    "toponymy>=0.5.4",
+    "datamapplot>=0.7.3",  # 0.7.3 pins deck.gl 9.1; earlier versions load deck.gl@latest, which breaks initial label render
+    "glasbey>=0.2",
+    "anthropic>=0.40",
+]
+
+[project.optional-dependencies]
+dev = [
+    "ruff>=0.14",
+    "pytest>=8.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
+
+[tool.uv]
+package = false
+
+[tool.ruff.lint.isort]
+# Stage scripts run with pipeline/ as sys.path[0], so these are local modules, not third-party.
+known-first-party = ["config", "io_utils", "embedder", "extract", "remote"]
