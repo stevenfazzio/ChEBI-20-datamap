@@ -25,6 +25,9 @@ PATHS = {
     "pubchem_cache": DATA_DIR / "pubchem_cache",  # stage 01: one JSON per PubChem batch (resume unit)
     "corpus": DATA_DIR / "corpus.parquet",  # stage 01: molecules + PubChem + derived fields + embed_text
     "corpus_meta": DATA_DIR / "corpus_meta.json",
+    # Stage 08: UMAP of the Morgan fingerprints. Independent of the embedding model, so unsuffixed.
+    "structure_umap": DATA_DIR / "umap_coords_morgan.npz",
+    "structure_umap_meta": DATA_DIR / "umap_meta_morgan.json",
 }
 
 # ── PubChem PUG REST ─────────────────────────────────────────────────────────
@@ -105,6 +108,11 @@ def keyed_files(key: str = EMBED_MODEL_KEY) -> dict[str, Path]:
         "labels_meta": DATA_DIR / f"labels_meta{suffix}.json",
         "structure": DATA_DIR / f"structure_agreement{suffix}.parquet",
         "structure_meta": DATA_DIR / f"structure_agreement_meta{suffix}.json",
+        # Stage 08: families from the fingerprint layout, named from this model's exemplars and keyphrases.
+        "families": DATA_DIR / f"families{suffix}.parquet",
+        "family_names": DATA_DIR / f"family_names{suffix}.json",
+        "family_tree": DATA_DIR / f"family_tree{suffix}.json",
+        "families_meta": DATA_DIR / f"families_meta{suffix}.json",
         # Exploration builds render into data/; the map's model renders straight into docs/ (stage 05).
         "map_dir": DOCS_DIR if key == EMBED_MODEL_KEY else DATA_DIR / f"map{suffix}",
     }
@@ -192,6 +200,36 @@ STRUCTURE_NEIGHBOURS_SHOWN = 2
 STRUCTURE_NEIGHBOUR_MIN_TANIMOTO = (
     0.3  # below this a "nearest" neighbour is noise (1.7% of molecules have none above it)
 )
+
+# ── Structural families (stage 08) ───────────────────────────────────────────
+# The fingerprint layout reuses the text layout's neighbourhood settings and seed; only the metric differs.
+STRUCTURE_UMAP_METRIC = "jaccard"
+# Families want to be few enough for a legend: a larger base cluster size than the map's regions, and a
+# shallow hierarchy. `08_structure_families.py --sweep` reports the alternatives.
+FAMILY_MIN_CLUSTERS = 6
+FAMILY_BASE_MIN_CLUSTER_SIZE = 100
+# Shorter names than the map's regions: with three layers these round onto the "3 to 6", "2 to 5" and
+# "1 to 4" word tiers.
+FAMILY_LOWEST_DETAIL = 0.5
+FAMILY_HIGHEST_DETAIL = 0.8
+FAMILY_NAMER_STYLE = (
+    "Write names in title case, with no colon, subtitle, or list of examples. These groups were formed by "
+    "similarity of the molecules' Morgan fingerprints, so name the chemical structure the members share (their "
+    "scaffold, ring system, functional groups or structural class), never a biological role, use or source organism."
+)
+FAMILY_OBJECT_DESCRIPTION = (
+    "chemical compounds, each given by its ChEBI description and IUPAC name, grouped by structural similarity"
+)
+# Hand corrections to Claude's family names, keyed by (layer, the name it produced) -> (name used, reason).
+# Applied when stage 08 writes its outputs and recorded in families_meta.json; the map says names are generated.
+FAMILY_NAME_OVERRIDES = {
+    (1, "Substituted Halogenated Aromatic Compounds"): (
+        "Substituted Aromatic And Heteroaromatic Compounds",
+        "5,026 molecules, the diffuse mass of small aromatic drugs, pesticides, dyes and benzenoids (median 19 heavy "
+        "atoms); only 28% carry a halogen, three times the corpus rate but a minority (2026-09-15)",
+    ),
+}
+FAMILY_LEGEND_TOP_N = 15  # families shown by name in the colormap; the rest pool as "Other family"
 
 # ── Rendering (stage 05) ─────────────────────────────────────────────────────
 MAP_TITLE = "ChEBI-20 Molecule Map"

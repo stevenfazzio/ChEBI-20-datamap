@@ -342,3 +342,35 @@ def run_label_on_runpod(key: str, sweep: bool = False, keep_pod: bool = False) -
         extra_packages=config.RUNPOD_LABEL_PACKAGES,
         keep_pod=keep_pod,
     )
+
+
+def run_families_on_runpod(key: str, keep_pod: bool = False) -> None:
+    """Stage 08 naming on the pod. The fingerprint layout is computed locally first (RDKit and UMAP stay off
+    the pod) and uploaded with the corpus and embeddings; the pod does the keyphrase embedding and LLM calls."""
+    files = config.keyed_files(key)
+    layout = config.PATHS["structure_umap"]
+    if not layout.exists():
+        raise RunpodError(f"{layout} is missing: run `08_structure_families.py --sweep` locally first to compute it")
+    if not config.ANTHROPIC_API_KEY:
+        raise RunpodError("ANTHROPIC_API_KEY is not set locally; nothing to hand the pod")
+    print(f"runpod: name structural families for {key} on {config.RUNPOD_GPU_ID}", flush=True)
+    command = (
+        f"cd {config.RUNPOD_REMOTE_DIR} && env HF_HOME={config.RUNPOD_HF_HOME} PYTHONUNBUFFERED=1 "
+        f"TOKENIZERS_PARALLELISM=false python pipeline/08_structure_families.py --embedding {key} --device cuda"
+    )
+    outputs = [files[k] for k in ("families", "family_names", "family_tree", "families_meta")]
+    uploads = [
+        "pipeline",
+        _rel(config.PATHS["corpus"]),
+        _rel(files["npz"]),
+        _rel(layout),
+        _rel(config.PATHS["structure_umap_meta"]),
+    ]
+    run_on_pod(
+        uploads=uploads,
+        command=command,
+        downloads=[(_remote(_rel(f)), f) for f in outputs],
+        env={"ANTHROPIC_API_KEY": config.ANTHROPIC_API_KEY},
+        extra_packages=config.RUNPOD_LABEL_PACKAGES,
+        keep_pod=keep_pod,
+    )

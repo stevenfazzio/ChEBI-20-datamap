@@ -1,7 +1,8 @@
 """Stage 05: render the interactive map -> docs/index.html + docs/chebi20_*.zip (externalised data).
 
-Reads corpus.parquet, umap_coords.npz, labels.parquet and structure_agreement.parquet (stage 07: the structural
-coherence colormap and the nearest-by-structure hover line). The data files are written beside the HTML and
+Reads corpus.parquet, umap_coords.npz, labels.parquet, structure_agreement.parquet (stage 07: the structural
+coherence colormap and the nearest-by-structure hover line) and families.parquet (stage 08: the structural-family
+colormap and hover line). The data files are written beside the HTML and
 fetched relative to it, so the map must be served over HTTP (`make serve`), never opened via file://.
 Open Graph tags are added to the page head so a shared link renders as a card.
 """
@@ -137,6 +138,18 @@ def load_structure(files: dict, cids: np.ndarray) -> pd.DataFrame:
     return structure
 
 
+def load_families(files: dict, cids: np.ndarray) -> pd.Series:
+    """The structural family of each molecule at the legend layer (the layer with about 30 families)."""
+    if not files["families"].exists():
+        raise SystemExit(f"{files['families']} is missing: run stage 08 (`make families`) before rendering")
+    families = pd.read_parquet(files["families"])
+    assert (families["cid"].to_numpy() == cids).all(), "families.parquet is not aligned with corpus.parquet"
+    cols = [c for c in families.columns if c.startswith("label_layer_")]
+    col = min(cols, key=lambda c: abs(families[c].nunique() - 30))
+    print(f"structural families from {col}: {families[col].nunique() - 1} named")
+    return families[col]
+
+
 def nearest_by_structure(structure: pd.DataFrame, names: dict) -> pd.Series:
     """One hover line per molecule naming its nearest fingerprint neighbours, or "" where none is close enough.
 
@@ -153,16 +166,21 @@ def nearest_by_structure(structure: pd.DataFrame, names: dict) -> pd.Series:
     return pd.Series([line(c, s) for c, s in pairs])
 
 
-def build_point_data(corpus: pd.DataFrame, nearest: pd.Series | None = None) -> pd.DataFrame:
+def build_point_data(
+    corpus: pd.DataFrame, nearest: pd.Series | None = None, family: pd.Series | None = None
+) -> pd.DataFrame:
     """One HTML column per molecule (`body`) that is both the hovercard and the search text, plus the CID.
 
     Storing the description once matters: the hover data ships as one gzipped JSON file, and a separate
     search column would double it. Search is a substring match over the column, so the identifiers line at
     the bottom of the card is what makes name, IUPAC name, formula and CID searchable. The nearest-by-structure
-    line (`nearest`, from stage 07) is searchable for the same reason: a name also finds the molecules it is
-    structurally nearest to.
+    line (`nearest`, from stage 07) and the structural family (`family`, from stage 08) are searchable for the
+    same reason: a name also finds the molecules structurally nearest to it, and a family name finds its members.
     """
-    corpus = corpus.assign(nearest="" if nearest is None else nearest.to_numpy())
+    corpus = corpus.assign(
+        nearest="" if nearest is None else nearest.to_numpy(),
+        family="" if family is None else family.replace("Unlabelled", "").to_numpy(),
+    )
 
     def facts_line(row) -> str:
         parts = [formula_html(row["pubchem_molecularFormula"])]
@@ -194,10 +212,13 @@ def build_point_data(corpus: pd.DataFrame, nearest: pd.Series | None = None) -> 
             f"{esc(row['name'])}</div>"
             f'<div style="font-size:11.5px;color:#57606a;margin-top:3px;line-height:1.5;">{facts_line(row)}</div>'
             f'<div style="font-size:12.5px;line-height:1.45;margin-top:8px;">{esc(row["description"])}</div>'
-            + (
-                f'<div style="font-size:11.5px;color:#57606a;margin-top:6px;line-height:1.5;">{row["nearest"]}</div>'
-                if row["nearest"]
-                else ""
+            + "".join(
+                f'<div style="font-size:11.5px;color:#57606a;margin-top:6px;line-height:1.5;">{line}</div>'
+                for line in (
+                    f"Structural family: {esc(row['family'])}" if row["family"] else "",
+                    row["nearest"],
+                )
+                if line
             )
             + '<div style="font-size:11px;color:#8b949e;margin-top:6px;line-height:1.5;overflow-wrap:anywhere;">'
             + "<br>".join(ids)
@@ -245,7 +266,8 @@ def main() -> None:
     if placeholder:
         print("labels are placeholders (stage 04 --preview); rendering an unnamed preview")
     structure = load_structure(files, cids)
-    extra = build_point_data(corpus, nearest_by_structure(structure, dict(zip(cids, corpus["name"]))))
+    family = load_families(files, cids)
+    extra = build_point_data(corpus, nearest_by_structure(structure, dict(zip(cids, corpus["name"]))), family)
 
     organism_meta, organism_vals = categorical(
         "organism",
@@ -267,6 +289,14 @@ def main() -> None:
         "color_mapping": {k: v for k, v in CHARGE_BUCKETS if k in set(charge_vals.tolist())},
         "show_legend": True,
     }
+    # Stage 08: families clustered in a fingerprint layout, named for their shared structure. Coloured on this
+    # map, a family that the descriptions scatter by use or source shows up sprayed across several regions.
+    family_meta, family_vals = categorical(
+        "family",
+        f"Structural family (largest {config.FAMILY_LEGEND_TOP_N} of {family.nunique() - 1}, by fingerprint)",
+        top_n(family.replace("Unlabelled", ""), config.FAMILY_LEGEND_TOP_N, "Other family", "Unlabelled"),
+        neutral="Unlabelled",
+    )
     split_meta, split_vals = categorical("split", "ChEBI-20 split", corpus["split"].to_numpy())
     mw = corpus["pubchem_molecularWeight"].astype(float)
     mw_vals = np.log10(mw.fillna(mw.median()).clip(lower=1)).to_numpy()
@@ -311,8 +341,26 @@ def main() -> None:
         cvd_safer=True,
         noise_label="Unlabelled",
         initial_zoom_fraction=config.MAP_INITIAL_ZOOM_FRACTION,
-        colormap_rawdata=[organism_vals, role_vals, charge_vals, mw_vals, xlogp_vals, coherence_vals, split_vals],
-        colormap_metadata=[organism_meta, role_meta, charge_meta, mw_meta, xlogp_meta, coherence_meta, split_meta],
+        colormap_rawdata=[
+            organism_vals,
+            role_vals,
+            family_vals,
+            charge_vals,
+            mw_vals,
+            xlogp_vals,
+            coherence_vals,
+            split_vals,
+        ],
+        colormap_metadata=[
+            organism_meta,
+            role_meta,
+            family_meta,
+            charge_meta,
+            mw_meta,
+            xlogp_meta,
+            coherence_meta,
+            split_meta,
+        ],
         custom_css=CUSTOM_CSS,
         custom_js=CUSTOM_JS,
         inline_data=False,

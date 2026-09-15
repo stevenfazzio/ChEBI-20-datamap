@@ -20,16 +20,17 @@ uv run python pipeline/02_embed.py          # Qwen3-Embedding-4B on the descript
 uv run python pipeline/03_reduce_umap.py    # UMAP -> 2-d, fixed seed -> data/umap_coords.npz
 uv run python pipeline/04_label_topics.py   # Toponymy + Claude region names -> data/labels.parquet
 uv run python pipeline/07_structure_agreement.py # Morgan fingerprints vs the map -> data/structure_agreement.parquet
+uv run python pipeline/08_structure_families.py  # fingerprint UMAP + Toponymy + Claude family names -> data/families.parquet
 uv run python pipeline/06_social_preview.py # static card -> docs/social-preview.png (run before 05)
 uv run python pipeline/05_visualize.py      # DataMapPlot -> docs/index.html + docs/chebi20_*.zip
 ```
 
-`make fetch|enrich|embed|umap|label|structure|preview|visualize|map` wrap the same commands (`map` runs 02-07); `make lint`,
+`make fetch|enrich|embed|umap|label|structure|families|preview|visualize|map` wrap the same commands (`map` runs 02-08); `make lint`,
 `make test`, `make serve` (the map fetches its data files relative to its origin, so it must be served,
 never opened via `file://`). Useful flags: `01_enrich.py --limit 50` and `02_embed.py --limit 200` are
-smoke tests that write nothing; `04_label_topics.py --sweep` reports region counts per layer at several
-granularities with no LLM calls. Stage 04 is the only stage that costs money. Run it the way `make label`
-does (`OMP_NUM_THREADS=1 TOKENIZERS_PARALLELISM=false HF_HUB_OFFLINE=1 PYTHONUNBUFFERED=1`): on macOS torch,
+smoke tests that write nothing; `04_label_topics.py --sweep` and `08_structure_families.py --sweep` report cluster counts per layer at several
+granularities with no LLM calls. Stages 04 and 08 are the only stages that cost money. Run them the way `make label`
+and `make families` do (`OMP_NUM_THREADS=1 TOKENIZERS_PARALLELISM=false HF_HUB_OFFLINE=1 PYTHONUNBUFFERED=1`): on macOS torch,
 scikit-learn and numba each load their own `libomp.dylib`, and the multi-runtime OpenMP has deadlocked this
 stage in sibling projects.
 
@@ -45,7 +46,7 @@ reaches the pod as a remote `.env`, never on a command line. The pod is deleted 
 and the account's registered SSH key at `~/.ssh/id_ed25519`.
 
 Stage scripts are run from the repo root; they import sibling modules (`config`, `io_utils`, `extract`,
-`embedder`, `remote`, `structure`) because `pipeline/` is `sys.path[0]` when a script there is executed. Tests load stage scripts by path
+`embedder`, `remote`, `structure`, `naming`) because `pipeline/` is `sys.path[0]` when a script there is executed. Tests load stage scripts by path
 with importlib, or put `pipeline/` on `sys.path` themselves.
 
 ## Data layout
@@ -65,6 +66,9 @@ data/labels.parquet                    cid + cluster_layer_i (int, -1 = unlabell
 data/topic_names.json                  region names per layer; cluster_tree.json the parent edges; labels_meta.json the run record
 data/structure_agreement.parquet       cid + Tanimoto of map/text/fingerprint neighbours, coherence, overlaps, 3 nearest by fingerprint (stage 07)
 data/structure_agreement_meta.json     fingerprint spec, summary tables, per-region mean coherence for every layer
+data/umap_coords_morgan.npz            cid + 2-d UMAP of the Morgan fingerprints (Jaccard); umap_meta_morgan.json its parameters
+data/families.parquet                  cid + cluster_layer_i / label_layer_i per family layer (stage 08; same schema as labels.parquet)
+data/family_names.json                 family names per layer; family_tree.json the parent edges; families_meta.json the run record
 docs/index.html                        the map; docs/chebi20_{point,meta,label}_data*.zip its externalised data
 ```
 
@@ -127,6 +131,17 @@ refetch it. Stage 01 skips any PubChem batch file that already exists.
   and small-molecule regions are not. A fingerprint-based map was considered and deferred; the finding says it
   would be a genuinely different view. A structural-family colormap (cluster the fingerprint space, colour
   this map by it) is the natural next step and is already half of that second map.
+- **Structural families (2026-09-15).** Stage 08 lays the fingerprints out with UMAP (Jaccard, otherwise the
+  map's settings; one vertex, helium-3, is disconnected by the approximate neighbour search and parked outside
+  the cloud), clusters that layout with Toponymy's clusterer at `base_min_cluster_size` 100 (112 / 29 / 7
+  families, 28% / 33% / 56% unlabelled; the sweep offered 224/71/23 at 50 and 51/14 at 200) and names the
+  families with Claude Sonnet 5 from description + IUPAC name, with an instruction to name shared structure and
+  ignore roles and sources. Raw SMILES were rejected as namer input: the keyphrase tokeniser shreds them and
+  the model reads them unreliably. One override (`config.FAMILY_NAME_OVERRIDES`): the 5,026-molecule aromatic
+  blob lost its "Halogenated" qualifier (28% halogenated). Stage 05 colours the map by the 15 largest of the 29
+  and puts the family in the hovercard. A Murcko-scaffold colormap was measured and dropped: 7,619 distinct
+  scaffolds, 25% acyclic, benzene 6.6%, and the next 14 scaffolds together under 12%, so "Other" would have been
+  most of the map. Stage 04 was refactored the same day to share `naming.py` with 08 and was not re-run.
 
 ## Data facts (ChEBI-20 as published, fetched 2026-09-15)
 
@@ -165,6 +180,8 @@ placeholder names so stage 05 can be iterated on without LLM calls; stage 05 fla
 Stage 07 added the same day: `data/structure_agreement.parquet` (28 s locally), the structural-coherence colormap and
 the nearest-by-structure hover line. Output is now `index.html` 0.18 MB plus 8.0 MB of data zips, of which the hover
 text is 7.05 MB (two neighbour names per molecule cost 1.0 MB compressed; a third would cost 0.4 MB more).
+Stage 08 the same day: the fingerprint UMAP takes 38 s locally; naming 148 families took 4.7 min of Toponymy time
+on a Runpod RTX 4090 (8.8 min of pod time). The family hover line adds 0.29 MB; the map is 8.55 MB in total.
 
 Browser notes (in-app Chromium pane, 800 x 600): the externalised map logs one "deck.gl: assertion failed" (after a
 "Pixel project matrix not invertible" warning) on first paint, before the data zips arrive, and then renders and

@@ -11,11 +11,12 @@ ChEBI-20 (Edwards et al. 2022) pairs a PubChem compound ID and SMILES string wit
 description ChEBI curators wrote for the molecule: its chemical class, how it relates to other compounds,
 its biological roles, and where it was isolated. This map embeds those descriptions and lays them out in
 two dimensions, so molecules that ChEBI describes similarly sit near each other. Hover for the compound
-name, formula, weight, charge, XLogP, structure drawing, full description and the two molecules nearest to
-it by chemical structure; click to open the PubChem page; search by name, formula, CID or any phrase in the
-description. The colour menu switches between the region colouring and seven metadata views: metabolite
-organism, first-stated biological role, formal charge, molecular weight, XLogP, structural coherence (below)
-and dataset split.
+name, formula, weight, charge, XLogP, structure drawing, full description, structural family and the two
+molecules nearest to it by chemical structure; click to open the PubChem page; search by name, formula, CID,
+family or any phrase in the description. The colour menu switches between the region colouring and eight
+metadata views: metabolite organism, first-stated biological role, structural family, formal charge,
+molecular weight, XLogP, structural coherence and dataset split. The last two, and the families, are
+explained below.
 
 ## How it is built
 
@@ -27,17 +28,19 @@ and dataset split.
 | 03 | `pipeline/03_reduce_umap.py` | UMAP to two dimensions with a fixed seed. |
 | 04 | `pipeline/04_label_topics.py` | [Toponymy](https://github.com/TutteInstitute/toponymy) clusters the 2-d layout and names the regions with Claude. |
 | 07 | `pipeline/07_structure_agreement.py` | Morgan fingerprints of every SMILES ([RDKit](https://www.rdkit.org/)); scores how structurally similar each molecule's map neighbours are and finds its nearest structural neighbours. |
+| 08 | `pipeline/08_structure_families.py` | UMAP of the fingerprints, clustered with Toponymy into structural families that Claude names for their shared structure. |
 | 05 | `pipeline/05_visualize.py` | [DataMapPlot](https://github.com/TutteInstitute/datamapplot) renders the map into `docs/`. |
 
 ```bash
 uv sync --extra dev
-make fetch enrich embed umap label structure visualize   # or: make map (stages 02-07)
+make fetch enrich embed umap label structure families visualize   # or: make map (stages 02-08)
 make serve                                     # http://127.0.0.1:8765/
 ```
 
-Stage 04 calls the Anthropic API and is the only stage that costs money. `make label` runs it with the
-environment variables it needs on macOS. Region names are LLM-generated labels for clusters of
-descriptions; they summarise what a region's molecules have in common and are not ChEBI classifications.
+Stages 04 and 08 call the Anthropic API and are the only stages that cost money. `make label` and
+`make families` run them with the environment variables they need on macOS. Region and family names are
+LLM-generated labels for clusters; they summarise what a group's molecules have in common and are not ChEBI
+classifications.
 
 ## How structural is the map?
 
@@ -80,6 +83,31 @@ Low coherence has two causes: regions defined by function (agrochemicals, kinase
 very small molecules, where the fingerprints themselves carry little information. The hovercard's "nearest by
 structure" line lists the two most similar molecules by fingerprint with their Tanimoto similarity, and is
 omitted when none reaches 0.3.
+
+### Structural families
+
+The **structural family** colour view runs the comparison the other way. Stage 08 lays the fingerprints out
+with their own UMAP (Jaccard metric, otherwise the map's settings), clusters that layout with Toponymy's
+clusterer into 112, 29 and 7 families at three granularities, and has Claude name each family from its
+members' descriptions and IUPAC names with an instruction to name the shared structure and ignore roles and
+sources. The colour view shows the 15 largest of the 29 mid-level families; a third of the molecules belong
+to no family dense enough to name and are shown in grey. One name was corrected by hand: the largest family,
+5,026 small aromatic and heteroaromatic molecules, came back as "halogenated" although only 28% of its members
+carry a halogen.
+
+Coloured onto the description map, a family either stays together or gets sprayed across regions, and that
+is the same finding seen per molecule. Counting how many of the map's 60 regions hold 80% of a family:
+
+| Stays together | Regions | Scattered | Regions |
+|---|---|---|---|
+| Flavonol And Flavone O-Glycosides | 2 | Cyclic Lactams And Pyrrolidinones | 16 |
+| Hydroxylated Steroid And Bile Acids | 3 | Substituted Aromatic And Heteroaromatic Compounds | 15 |
+| Hydroxy Polyunsaturated Eicosanoid Lipid Mediators | 3 | Anthraquinones And Prenylated Flavanoid Ketones | 14 |
+| N-Acetylhexosamine Containing Oligosaccharides | 3 | Indole-3-yl Substituted Compounds | 12 |
+| Fatty Acyl-CoA Thioesters | 4 | Aromatic Amino Acid Carboxamides | 11 |
+
+Chemotypes with a systematic naming vocabulary stay together; chemotypes that cut across biological function
+are split by it.
 
 ## Data and credits
 

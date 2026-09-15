@@ -44,4 +44,4 @@ package = false
 
 [tool.ruff.lint.isort]
 # Stage scripts run with pipeline/ as sys.path[0], so these are local modules, not third-party.
-known-first-party = ["config", "io_utils", "embedder", "extract", "remote", "structure"]
+known-first-party = ["config", "io_utils", "embedder", "extract", "remote", "structure", "naming"]

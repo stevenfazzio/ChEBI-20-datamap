@@ -84,3 +84,22 @@ def test_build_point_data_includes_the_nearest_line_only_when_present():
     assert "Nearest by structure: X (0.50)" in out["body"][0]
     assert "Nearest by structure" not in out["body"][1]
     assert "Nearest by structure" not in viz.build_point_data(corpus)["body"][0]  # the line is optional
+
+
+def test_build_point_data_family_line_is_optional_and_escaped():
+    corpus = pd.DataFrame(
+        {
+            "cid": [1, 2],
+            "name": ["A", "B"],
+            "split": ["train", "test"],
+            "description": ["The molecule is a thing.", "The molecule is another."],
+            "pubchem_molecularFormula": ["C2H6", None],
+            "pubchem_molecularWeight": [30.07, None],
+            "pubchem_charge": [0, None],
+            "pubchem_xLogP": [1.0, None],
+            "pubchem_iUPACName": ["ethane", None],
+        }
+    )
+    out = viz.build_point_data(corpus, family=pd.Series(["Acids & Esters", "Unlabelled"]))
+    assert "Structural family: Acids &amp; Esters" in out["body"][0]
+    assert "Structural family" not in out["body"][1]  # Unlabelled shows nothing
