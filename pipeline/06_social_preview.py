@@ -1,4 +1,5 @@
-"""Stage 06: a static render for sharing -> docs/social-preview.png (Open Graph card, 1200 x 630).
+"""Stage 06: a static render for sharing -> docs/social-preview.png (Open Graph card, 1200 x 630), or docs/morgan/
+social-preview.png for the structure map (`--layout morgan`).
 
 Reads the same layout and labels as stage 05 and draws only the coarsest layer, which is what reads at card size.
 Stage 05 picks the PNG up as the og:image when it exists, so run this before the final `05_visualize.py`.
@@ -20,8 +21,10 @@ OG_SIZE = (1200, 630)
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--embedding", default=config.EMBED_MODEL_KEY, choices=sorted(config.EMBED_MODELS))
+    ap.add_argument("--layout", default="text", choices=sorted(config.LAYOUTS))
     args = ap.parse_args()
-    files = config.keyed_files(args.embedding)
+    files = config.keyed_files(args.embedding, args.layout)
+    files["map_dir"].mkdir(parents=True, exist_ok=True)
 
     coords = np.load(files["umap"], allow_pickle=True)["coords"]
     labels = pd.read_parquet(files["labels"])
@@ -32,8 +35,8 @@ def main() -> None:
     fig, _ = datamapplot.create_plot(
         coords,
         coarsest,
-        title=config.MAP_TITLE,
-        sub_title=f"{len(coords):,} molecules, positioned by the meaning of their ChEBI descriptions",
+        title=config.map_title(args.layout),
+        sub_title=f"{len(coords):,} molecules, positioned by {config.LAYOUTS[args.layout]['positioned_by']}",
         noise_label="Unlabelled",
         cvd_safer=True,
         figsize=(OG_SIZE[0] / 100, OG_SIZE[1] / 100),

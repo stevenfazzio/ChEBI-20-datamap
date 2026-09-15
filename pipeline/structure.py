@@ -77,26 +77,18 @@ def knn_layout(coords: np.ndarray, k: int) -> np.ndarray:
     return idx[keep].reshape(n, k).astype(np.int32)
 
 
-def tanimoto_neighbourhoods(
-    fps: np.ndarray, k: int, gather: dict[str, np.ndarray] | None = None, chunk: int = CHUNK
-) -> tuple[np.ndarray, np.ndarray, dict[str, np.ndarray]]:
-    """Exact k nearest neighbours by Tanimoto similarity over binary fingerprints, self excluded.
-
-    Returns the (n, k) neighbour indices, their (n, k) similarities, and, for each array in `gather`
-    (name -> (n, m) indices), the mean Tanimoto between every row and the m molecules it names. That scores
-    another space's neighbourhoods in the same pass over the n x n similarity instead of a second one.
-    """
-    F = fps.astype(np.float32)
-    cnt = F.sum(1)
-    n = len(F)
+def _neighbourhoods(sim_block, n: int, k: int, gather: dict[str, np.ndarray] | None, chunk: int):
+    """Exact k nearest neighbours by similarity, self excluded, from a function giving the (m, n) similarity rows
+    of a chunk of molecules. Returns the (n, k) neighbour indices, their similarities and, for each array in
+    `gather` (name -> (n, m) indices), the mean similarity between every row and the m molecules it names. That
+    scores another space's neighbourhoods in the same pass over the n x n similarity instead of a second one."""
     gather = gather or {}
     idx = np.empty((n, k), dtype=np.int32)
     sims_k = np.empty((n, k), dtype=np.float32)
     gathered = {name: np.empty(n, dtype=np.float32) for name in gather}
     for s in range(0, n, chunk):
         m = min(chunk, n - s)
-        inter = F[s : s + m] @ F.T
-        sims = inter / np.maximum(cnt[s : s + m, None] + cnt[None, :] - inter, 1)  # empty vs empty scores 0
+        sims = sim_block(s, m)
         rows = np.arange(m)[:, None]
         for name, ids in gather.items():
             gathered[name][s : s + m] = sims[rows, ids[s : s + m]].mean(1)
@@ -104,6 +96,28 @@ def tanimoto_neighbourhoods(
         idx[s : s + m] = _top_k(sims, k)
         sims_k[s : s + m] = np.take_along_axis(sims, idx[s : s + m], 1)
     return idx, sims_k, gathered
+
+
+def tanimoto_neighbourhoods(
+    fps: np.ndarray, k: int, gather: dict[str, np.ndarray] | None = None, chunk: int = CHUNK
+) -> tuple[np.ndarray, np.ndarray, dict[str, np.ndarray]]:
+    """Exact k nearest neighbours by Tanimoto similarity over binary fingerprints; see _neighbourhoods."""
+    F = fps.astype(np.float32)
+    cnt = F.sum(1)
+
+    def block(s, m):
+        inter = F[s : s + m] @ F.T
+        return inter / np.maximum(cnt[s : s + m, None] + cnt[None, :] - inter, 1)  # empty vs empty scores 0
+
+    return _neighbourhoods(block, len(F), k, gather, chunk)
+
+
+def cosine_neighbourhoods(
+    embeddings: np.ndarray, k: int, gather: dict[str, np.ndarray] | None = None, chunk: int = CHUNK
+) -> tuple[np.ndarray, np.ndarray, dict[str, np.ndarray]]:
+    """Exact k nearest neighbours by cosine similarity over unit-norm rows; see _neighbourhoods."""
+    E = embeddings.astype(np.float32)
+    return _neighbourhoods(lambda s, m: E[s : s + m] @ E.T, len(E), k, gather, chunk)
 
 
 def neighbour_overlap(a: np.ndarray, b: np.ndarray) -> np.ndarray:

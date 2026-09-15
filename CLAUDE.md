@@ -4,11 +4,12 @@ Guidance for Claude Code when working in this repository.
 
 ## Project overview
 
-An interactive datamap of ChEBI-20 (Edwards et al. 2022, the MolT5 molecule-captioning benchmark): 33,008
-molecules, each a PubChem CID, a SMILES string and a ChEBI natural-language description. Embed each
-description, lay the corpus out in 2-d with UMAP, name the regions with Toponymy, render with DataMapPlot,
-publish from `docs/` to GitHub Pages. A second map laid out from the SMILES (chemical structure rather than
-prose) is a possible follow-on; nothing in v1 depends on it.
+Two interactive datamaps of ChEBI-20 (Edwards et al. 2022, the MolT5 molecule-captioning benchmark): 33,008
+molecules, each a PubChem CID, a SMILES string and a ChEBI natural-language description. The description map
+embeds each description, lays the corpus out in 2-d with UMAP, names the regions with Toponymy and renders with
+DataMapPlot into `docs/`; the structure map does the same from Morgan fingerprints of the SMILES into
+`docs/morgan/`. Each map carries the other's regions as a colour view and a per-molecule score of how far its
+neighbourhoods agree with the other similarity. Both publish from `docs/` to GitHub Pages.
 
 ## Running the pipeline
 
@@ -19,18 +20,18 @@ uv run python pipeline/01_enrich.py         # PubChem properties per CID + role 
 uv run python pipeline/02_embed.py          # Qwen3-Embedding-4B on the descriptions -> data/embeddings.npz
 uv run python pipeline/03_reduce_umap.py    # UMAP -> 2-d, fixed seed -> data/umap_coords.npz
 uv run python pipeline/04_label_topics.py   # Toponymy + Claude region names -> data/labels.parquet
-uv run python pipeline/07_structure_agreement.py # Morgan fingerprints vs the map -> data/structure_agreement.parquet
-uv run python pipeline/08_structure_families.py  # fingerprint UMAP + Toponymy + Claude family names -> data/families.parquet
+uv run python pipeline/07_structure_agreement.py # map neighbourhoods scored by the other similarity -> data/structure_agreement.parquet
 uv run python pipeline/06_social_preview.py # static card -> docs/social-preview.png (run before 05)
 uv run python pipeline/05_visualize.py      # DataMapPlot -> docs/index.html + docs/chebi20_*.zip
 ```
 
-`make fetch|enrich|embed|umap|label|structure|families|preview|visualize|map` wrap the same commands (`map` runs 02-08); `make lint`,
+Stages 03-07 take `--layout text|morgan`; `morgan` is the structure map (Morgan fingerprints, Jaccard UMAP, `_morgan`
+file names, `docs/morgan/`). `make fetch|enrich|embed|umap|label|structure|preview|visualize|map` wrap the same
+commands (`map` runs 02-07 for the description map; `make map-structure` runs 03-07 with `LAYOUT=morgan`); `make lint`,
 `make test`, `make serve` (the map fetches its data files relative to its origin, so it must be served,
 never opened via `file://`). Useful flags: `01_enrich.py --limit 50` and `02_embed.py --limit 200` are
-smoke tests that write nothing; `04_label_topics.py --sweep` and `08_structure_families.py --sweep` report cluster counts per layer at several
-granularities with no LLM calls. Stages 04 and 08 are the only stages that cost money. Run them the way `make label`
-and `make families` do (`OMP_NUM_THREADS=1 TOKENIZERS_PARALLELISM=false HF_HUB_OFFLINE=1 PYTHONUNBUFFERED=1`): on macOS torch,
+smoke tests that write nothing; `04_label_topics.py --sweep` reports cluster counts per layer at several granularities with no LLM calls. Stage 04
+is the only stage that costs money, once per map. Run it the way `make label` does (`OMP_NUM_THREADS=1 TOKENIZERS_PARALLELISM=false HF_HUB_OFFLINE=1 PYTHONUNBUFFERED=1`): on macOS torch,
 scikit-learn and numba each load their own `libomp.dylib`, and the multi-runtime OpenMP has deadlocked this
 stage in sibling projects.
 
@@ -62,13 +63,13 @@ data/pubchem.parquet                   cid + pubchem_* properties
 data/corpus.parquet                    molecules + pubchem + roles/primary_role/primary_organism + name, url, embed_text
 data/embeddings.npz                    cid + unit-norm float32 embeddings; embeddings_meta.json records model revision etc.
 data/umap_coords.npz                   cid + 2-d layout; umap_meta.json records the parameters
+data/umap_coords_morgan.npz            the structure map's layout: 2-d UMAP of the Morgan fingerprints (Jaccard); no model suffix
 data/labels.parquet                    cid + cluster_layer_i (int, -1 = unlabelled) + label_layer_i (name); layer 0 is FINEST
 data/topic_names.json                  region names per layer; cluster_tree.json the parent edges; labels_meta.json the run record
-data/structure_agreement.parquet       cid + Tanimoto of map/text/fingerprint neighbours, coherence, overlaps, 3 nearest by fingerprint (stage 07)
-data/structure_agreement_meta.json     fingerprint spec, summary tables, per-region mean coherence for every layer
-data/umap_coords_morgan.npz            cid + 2-d UMAP of the Morgan fingerprints (Jaccard); umap_meta_morgan.json its parameters
-data/families.parquet                  cid + cluster_layer_i / label_layer_i per family layer (stage 08; same schema as labels.parquet)
-data/family_names.json                 family names per layer; family_tree.json the parent edges; families_meta.json the run record
+data/structure_agreement.parquet       cid + coherence, similarity of map/own/other-space neighbours, overlaps, 3 nearest in the other space
+data/structure_agreement_meta.json     fingerprint spec, random floor, summary tables, per-region coherence, spread over the other map
+data/*_morgan.*                        the structure map's labels, names, tree, meta and agreement files (same schemas)
+docs/morgan/index.html                 the structure map and its own data zips and social-preview.png
 docs/index.html                        the map; docs/chebi20_{point,meta,label}_data*.zip its externalised data
 ```
 
@@ -131,17 +132,22 @@ refetch it. Stage 01 skips any PubChem batch file that already exists.
   and small-molecule regions are not. A fingerprint-based map was considered and deferred; the finding says it
   would be a genuinely different view. A structural-family colormap (cluster the fingerprint space, colour
   this map by it) is the natural next step and is already half of that second map.
-- **Structural families (2026-09-15).** Stage 08 lays the fingerprints out with UMAP (Jaccard, otherwise the
-  map's settings; one vertex, helium-3, is disconnected by the approximate neighbour search and parked outside
-  the cloud), clusters that layout with Toponymy's clusterer at `base_min_cluster_size` 100 (112 / 29 / 7
-  families, 28% / 33% / 56% unlabelled; the sweep offered 224/71/23 at 50 and 51/14 at 200) and names the
-  families with Claude Sonnet 5 from description + IUPAC name, with an instruction to name shared structure and
-  ignore roles and sources. Raw SMILES were rejected as namer input: the keyphrase tokeniser shreds them and
-  the model reads them unreliably. One override (`config.FAMILY_NAME_OVERRIDES`): the 5,026-molecule aromatic
-  blob lost its "Halogenated" qualifier (28% halogenated). Stage 05 colours the map by the 15 largest of the 29
-  and puts the family in the hovercard. A Murcko-scaffold colormap was measured and dropped: 7,619 distinct
-  scaffolds, 25% acyclic, benzene 6.6%, and the next 14 scaffolds together under 12%, so "Other" would have been
-  most of the map. Stage 04 was refactored the same day to share `naming.py` with 08 and was not re-run.
+- **The structure map (2026-09-15).** Stages 03-07 take `--layout`; `config.LAYOUTS` holds what differs (metric,
+  granularity, namer text and instruction, overrides). The fingerprint layout is a Jaccard UMAP of the Morgan
+  bits with the text map's other settings (helium-3 is disconnected by the approximate neighbour search and parked
+  outside the cloud); clustered at `base_min_cluster_size` 20 like the text map (594 / 187 / 50 / 15 regions;
+  the sweep gave 783/249/79/22/8 at 15 and 237/74/20/7 at 50) and named by Claude Sonnet 5 from description +
+  IUPAC name with an instruction to name shared structure and ignore roles and sources. Raw SMILES were rejected
+  as namer input: the keyphrase tokeniser shreds them and the model reads them unreliably. Two overrides
+  (`config.STRUCTURE_NAME_OVERRIDES`): regions named "halogenated" at 26% and 36% halogen content. Each map's
+  cross colormap and hover line come from the other map's layer with about 30 regions (`CROSS_LAYER_TARGET`:
+  the text map's 20, the structure map's 15), so the "structural family" of a text-map hover is a region a
+  viewer can find on the structure map. Coherence on both maps is floor-corrected, (map - random) / (ceiling -
+  random), because description cosines have a floor of 0.78; that dropped the text map's mean from 0.55 to
+  0.44 without reordering regions. An earlier stage 08 that clustered the fingerprint layout coarsely (base 100,
+  112/29/7 "families") was superseded by this; its `data/families*` files are obsolete. A Murcko-scaffold
+  colormap was measured and dropped: 7,619 distinct scaffolds, 25% acyclic, benzene 6.6%, and the next 14
+  scaffolds together under 12%, so "Other" would have been most of the map.
 
 ## Data facts (ChEBI-20 as published, fetched 2026-09-15)
 
@@ -180,8 +186,10 @@ placeholder names so stage 05 can be iterated on without LLM calls; stage 05 fla
 Stage 07 added the same day: `data/structure_agreement.parquet` (28 s locally), the structural-coherence colormap and
 the nearest-by-structure hover line. Output is now `index.html` 0.18 MB plus 8.0 MB of data zips, of which the hover
 text is 7.05 MB (two neighbour names per molecule cost 1.0 MB compressed; a third would cost 0.4 MB more).
-Stage 08 the same day: the fingerprint UMAP takes 38 s locally; naming 148 families took 4.7 min of Toponymy time
-on a Runpod RTX 4090 (8.8 min of pod time). The family hover line adds 0.29 MB; the map is 8.55 MB in total.
+The structure map, the same day: `docs/morgan/index.html` plus its own zips (8.58 MB; hover text 7.38 MB) and
+social card. Its 846 regions were named in 8.3 min of Toponymy time on a Runpod RTX 4090 (13.1 min of pod time,
+about $7 of Sonnet 5 by estimate; not measured). The text map was re-rendered with the structure map's 15
+coarsest regions as its "structural family" view (8.45 MB). Stage 04 for the text map was not re-run.
 
 Browser notes (in-app Chromium pane, 800 x 600): the externalised map logs one "deck.gl: assertion failed" (after a
 "Pixel project matrix not invertible" warning) on first paint, before the data zips arrive, and then renders and

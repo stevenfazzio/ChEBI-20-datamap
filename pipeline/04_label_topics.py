@@ -1,8 +1,11 @@
-"""Stage 04: name the regions of the map with Toponymy -> data/labels.parquet (+ topic_names.json,
-cluster_tree.json, labels_meta.json).
+"""Stage 04: name the regions of a map with Toponymy -> data/labels.parquet (+ topic_names.json, cluster_tree.json,
+labels_meta.json), or the `_morgan` versions for the structure map.
 
-Clustering happens in the 2-d layout (clusterable_vectors=coords) so named regions correspond to what a
-viewer sees; the embeddings supply the semantics for exemplars, keyphrases and the namer.
+Clustering happens in the 2-d layout (clusterable_vectors=coords) so named regions correspond to what a viewer
+sees; the description embeddings supply the semantics for exemplars, keyphrases and the namer on both maps. For
+the structure map (`--layout morgan`) the namer also sees each molecule's IUPAC name and is told to name the
+shared chemical structure rather than roles or sources, since those regions are structural clusters; hand
+corrections to its names live in config.STRUCTURE_NAME_OVERRIDES and are recorded in the meta.
 
 `--sweep` fits the clusterer at several granularities and reports layer sizes without calling the LLM.
 `--preview` fits the configured granularity and writes placeholder names ("Region 2.17") so stage 05 can
@@ -23,28 +26,32 @@ import config
 from embedder import MoleculeEmbedder, compose_embed_text
 from naming import PLACEHOLDER, describe_layers, fit_clusterer, make_namer, placeholder_names, write_label_outputs
 
-SWEEP_SETTINGS = [  # (min_clusters, base_min_cluster_size)
-    (6, 15),
-    (6, 20),
-    (6, 30),
-    (6, 50),
-    (4, 20),
-]
+
+def compose_namer_text(corpus: pd.DataFrame, layout: str) -> pd.Series:
+    """What the namer reads. The text map's namer sees exactly the text that was embedded; the structure map's
+    namer also gets the IUPAC name, which is structure written in words."""
+    text = compose_embed_text(corpus)
+    if not config.LAYOUTS[layout]["namer_sees_iupac"]:
+        return text
+    iupac = corpus["pubchem_iUPACName"]
+    has = iupac.notna() & (iupac.astype(str).str.strip() != "")
+    return text + np.where(has, " IUPAC name: " + iupac.astype(str).str.strip() + ".", "")
 
 
 def load_inputs(files: dict) -> tuple[pd.DataFrame, np.ndarray, np.ndarray]:
-    corpus = pd.read_parquet(config.PATHS["corpus"], columns=["cid", "description"])
+    corpus = pd.read_parquet(config.PATHS["corpus"], columns=["cid", "description", "pubchem_iUPACName"])
     emb = np.load(files["npz"], allow_pickle=True)
     lay = np.load(files["umap"], allow_pickle=True)
     cids = corpus["cid"].to_numpy()
     assert (emb["cid"] == cids).all(), "embeddings.npz is not aligned with corpus.parquet"
-    assert (lay["cid"] == cids).all(), "umap_coords.npz is not aligned with corpus.parquet"
+    assert (lay["cid"] == cids).all(), f"{files['umap'].name} is not aligned with corpus.parquet"
     return corpus, emb["embeddings"], lay["coords"]
 
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--embedding", default=config.EMBED_MODEL_KEY, choices=sorted(config.EMBED_MODELS))
+    ap.add_argument("--layout", default="text", choices=sorted(config.LAYOUTS))
     ap.add_argument("--sweep", action="store_true", help="report layer sizes at several granularities; no LLM calls")
     ap.add_argument(
         "--preview", action="store_true", help="write placeholder region names for an unnamed map; no LLM calls"
@@ -55,72 +62,68 @@ def main() -> None:
     if args.device == "runpod":
         from remote import run_label_on_runpod
 
-        run_label_on_runpod(args.embedding, sweep=args.sweep, keep_pod=args.keep_pod)
+        run_label_on_runpod(args.embedding, args.layout, sweep=args.sweep, keep_pod=args.keep_pod)
         return
-    files = config.keyed_files(args.embedding)
+    files = config.keyed_files(args.embedding, args.layout)
+    spec = config.LAYOUTS[args.layout]
 
     corpus, embeddings, coords = load_inputs(files)
-    print(f"{len(corpus)} molecules, embeddings {embeddings.shape}, coords {coords.shape}")
+    print(f"{len(corpus)} molecules, embeddings {embeddings.shape}, {args.layout} coords {coords.shape}")
 
     if args.sweep:
-        for min_clusters, base in SWEEP_SETTINGS:
+        for min_clusters, base in spec["sweep"]:
             print(f"\nmin_clusters={min_clusters}, base_min_cluster_size={base}")
             describe_layers(fit_clusterer(coords, embeddings, min_clusters, base))
         return
 
-    clusterer = fit_clusterer(coords, embeddings, config.TOPONYMY_MIN_CLUSTERS, config.TOPONYMY_BASE_MIN_CLUSTER_SIZE)
-    print(f"clusterer: min_clusters={config.TOPONYMY_MIN_CLUSTERS}, base size={config.TOPONYMY_BASE_MIN_CLUSTER_SIZE}")
+    clusterer = fit_clusterer(coords, embeddings, spec["min_clusters"], spec["base_min_cluster_size"])
+    print(f"clusterer: min_clusters={spec['min_clusters']}, base size={spec['base_min_cluster_size']}")
     layer_stats = describe_layers(clusterer)
     if args.preview:
         names = placeholder_names(clusterer, "Region")
-        write_outputs(files, corpus, clusterer, names, args.embedding, layer_stats, 0.0, namer_model=PLACEHOLDER)
+        write_outputs(files, corpus, clusterer, names, args, layer_stats, 0.0, namer_model=PLACEHOLDER)
         return
 
     assert config.ANTHROPIC_API_KEY, "ANTHROPIC_API_KEY is not set"
     n_regions = sum(r["n_clusters"] for r in layer_stats)
     print(f"{n_regions} regions to name with {config.NAMER_MODEL} (plus disambiguation passes)")
 
-    namer = make_namer(config.NAMER_STYLE)
+    namer = make_namer(spec["namer_style"])
     device = None if args.device == "auto" else args.device
     embedder = MoleculeEmbedder(key=args.embedding, device=device)  # keyphrases live in the documents' space
     topic_model = Toponymy(
         llm_wrapper=namer,
         text_embedding_model=embedder,
         clusterer=clusterer,
-        object_description=config.OBJECT_DESCRIPTION,
+        object_description=spec["object_description"],
         corpus_description=config.CORPUS_DESCRIPTION,
-        lowest_detail_level=config.TOPONYMY_LOWEST_DETAIL,
-        highest_detail_level=config.TOPONYMY_HIGHEST_DETAIL,
+        lowest_detail_level=spec["detail_levels"][0],
+        highest_detail_level=spec["detail_levels"][1],
         verbose=True,
     )
-    texts = compose_embed_text(corpus).tolist()  # the namer sees exactly the text that was embedded
+    texts = compose_namer_text(corpus, args.layout).tolist()
     t0 = time.time()
     # Keyword arguments on purpose: Toponymy.fit takes high-d first, Clusterer.fit takes low-d first.
     topic_model.fit(objects=texts, embedding_vectors=embeddings, clusterable_vectors=coords)
     elapsed = time.time() - t0
     print(f"Toponymy fit in {elapsed / 60:.1f} min")
 
-    write_outputs(
-        files,
-        corpus,
-        clusterer,
-        topic_model.topic_names_,
-        args.embedding,
-        layer_stats,
-        elapsed,
-        namer_model=config.NAMER_MODEL,
-    )
+    write_outputs(files, corpus, clusterer, topic_model.topic_names_, args, layer_stats, elapsed, config.NAMER_MODEL)
 
 
-def write_outputs(files, corpus, clusterer, names, embedding, layer_stats, elapsed, namer_model) -> None:
+def write_outputs(files, corpus, clusterer, names, args, layer_stats, elapsed, namer_model) -> None:
+    spec = config.LAYOUTS[args.layout]
     meta = {
-        "embedding": embedding,
+        "embedding": args.embedding,
+        "layout": args.layout,
         "namer_model": namer_model,
         "namer_provider_kwargs": config.NAMER_PROVIDER_KWARGS,
-        "namer_style": config.NAMER_STYLE,
-        "detail_levels": [config.TOPONYMY_LOWEST_DETAIL, config.TOPONYMY_HIGHEST_DETAIL],
-        "min_clusters": config.TOPONYMY_MIN_CLUSTERS,
-        "base_min_cluster_size": config.TOPONYMY_BASE_MIN_CLUSTER_SIZE,
+        "namer_style": spec["namer_style"],
+        "object_description": spec["object_description"],
+        "namer_sees_iupac": spec["namer_sees_iupac"],
+        "detail_levels": list(spec["detail_levels"]),
+        "min_clusters": spec["min_clusters"],
+        "base_min_cluster_size": spec["base_min_cluster_size"],
         "layers": layer_stats,
         "minutes": round(elapsed / 60, 1),
         "labelled_at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
@@ -131,7 +134,7 @@ def write_outputs(files, corpus, clusterer, names, embedding, layer_stats, elaps
         "tree": files["cluster_tree"],
         "meta": files["labels_meta"],
     }
-    write_label_outputs(paths, corpus, clusterer, names, meta)
+    write_label_outputs(paths, corpus, clusterer, names, meta, spec["name_overrides"])
 
 
 if __name__ == "__main__":

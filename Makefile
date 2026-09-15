@@ -1,4 +1,4 @@
-.PHONY: install lint format test fetch enrich embed umap label structure families visualize preview map serve clean
+.PHONY: install lint format test fetch enrich embed umap label structure visualize preview map map-structure serve clean
 
 install:
 	uv sync --extra dev
@@ -21,33 +21,35 @@ enrich:
 embed:
 	uv run python pipeline/02_embed.py
 
+# Stages 03-07 take a layout: `text` (the description map, the default) or `morgan` (the structure map).
+LAYOUT ?= text
+
 umap:
-	uv run python pipeline/03_reduce_umap.py
+	uv run python pipeline/03_reduce_umap.py --layout $(LAYOUT)
 
 # HF_HUB_OFFLINE: the model is cached by stage 02, and a live Hub check has hung this stage before.
 # OMP_NUM_THREADS=1: torch, scikit-learn and numba each load their own libomp on macOS, and the
 # resulting multi-runtime OpenMP has deadlocked this stage in sibling projects; the heavy work is on the GPU anyway.
 label:
 	OMP_NUM_THREADS=1 TOKENIZERS_PARALLELISM=false HF_HUB_OFFLINE=1 PYTHONUNBUFFERED=1 \
-		uv run python pipeline/04_label_topics.py
-
-# Same environment as label: the naming runs Toponymy with torch, scikit-learn and numba in one process.
-families:
-	OMP_NUM_THREADS=1 TOKENIZERS_PARALLELISM=false HF_HUB_OFFLINE=1 PYTHONUNBUFFERED=1 \
-		uv run python pipeline/08_structure_families.py
+		uv run python pipeline/04_label_topics.py --layout $(LAYOUT)
 
 # After label (its per-region report reads the labels), before visualize (which reads its output).
 structure:
-	uv run python pipeline/07_structure_agreement.py
+	uv run python pipeline/07_structure_agreement.py --layout $(LAYOUT)
 
 # Run before visualize: stage 05 uses the PNG as the Open Graph image when it exists.
 preview:
-	uv run python pipeline/06_social_preview.py
+	uv run python pipeline/06_social_preview.py --layout $(LAYOUT)
 
 visualize:
-	uv run python pipeline/05_visualize.py
+	uv run python pipeline/05_visualize.py --layout $(LAYOUT)
 
-map: embed umap label structure families preview visualize
+map: embed umap label structure preview visualize
+
+# The structure map: the same stages on the fingerprint layout, into docs/morgan/.
+map-structure:
+	$(MAKE) umap label structure preview visualize LAYOUT=morgan
 
 # The map fetches its data files relative to its origin, so it must be served, never opened via file://.
 serve:

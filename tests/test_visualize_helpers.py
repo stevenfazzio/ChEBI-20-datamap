@@ -51,19 +51,22 @@ def test_categorical_pins_neutral_to_grey_and_covers_every_category():
     assert (vals == values).all()
 
 
-def test_nearest_by_structure_drops_weak_neighbours_and_escapes():
+def test_nearest_line_drops_weak_neighbours_and_escapes():
     structure = pd.DataFrame(
         {
-            "morgan_neighbour_cids": [[10, 11, 12], [10, 11, 12], [11, 12, 10]],
-            "morgan_neighbour_tanimoto": [[0.9, 0.5, 0.2], [0.29, 0.1, 0.05], [0.31, 0.3, 0.29]],
+            "neighbour_cids": [[10, 11, 12], [10, 11, 12], [11, 12, 10]],
+            "neighbour_similarity": [[0.9, 0.5, 0.2], [0.29, 0.1, 0.05], [0.31, 0.3, 0.29]],
         }
     )
     names = {10: "Aspirin", 11: "R&D compound", 12: "Toluene"}
-    out = viz.nearest_by_structure(structure, names)
+    out = viz.nearest_line(structure, names, "Nearest by structure", 0.3)
     assert out[0] == "Nearest by structure: Aspirin (0.90) · R&amp;D compound (0.50)"
     assert out[1] == ""  # nothing above the floor: no line at all
-    assert "Toluene" not in out[0]  # STRUCTURE_NEIGHBOURS_SHOWN (2) of the STRUCTURE_NEIGHBOURS_STORED (3)
     assert out[2] == "Nearest by structure: R&amp;D compound (0.31) · Toluene (0.30)"  # the floor is inclusive
+    assert "Toluene" not in out[0]  # STRUCTURE_NEIGHBOURS_SHOWN (2) of the STRUCTURE_NEIGHBOURS_STORED (3)
+    assert viz.nearest_line(structure, names, "Nearest by description", 0.0)[1].startswith(
+        "Nearest by description: Aspirin"
+    )
 
 
 def test_build_point_data_includes_the_nearest_line_only_when_present():
@@ -86,7 +89,7 @@ def test_build_point_data_includes_the_nearest_line_only_when_present():
     assert "Nearest by structure" not in viz.build_point_data(corpus)["body"][0]  # the line is optional
 
 
-def test_build_point_data_family_line_is_optional_and_escaped():
+def test_build_point_data_cross_line_is_optional_and_escaped():
     corpus = pd.DataFrame(
         {
             "cid": [1, 2],
@@ -100,6 +103,8 @@ def test_build_point_data_family_line_is_optional_and_escaped():
             "pubchem_iUPACName": ["ethane", None],
         }
     )
-    out = viz.build_point_data(corpus, family=pd.Series(["Acids & Esters", "Unlabelled"]))
+    out = viz.build_point_data(
+        corpus, cross=pd.Series(["Acids & Esters", "Unlabelled"]), cross_label="Structural family"
+    )
     assert "Structural family: Acids &amp; Esters" in out["body"][0]
     assert "Structural family" not in out["body"][1]  # Unlabelled shows nothing

@@ -13,11 +13,12 @@ sys.path.insert(0, str(Path(__file__).parents[1] / "pipeline"))
 
 import naming  # noqa: E402
 
-spec = importlib.util.spec_from_file_location(
-    "families", Path(__file__).parents[1] / "pipeline" / "08_structure_families.py"
-)
-families = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(families)
+
+def load_stage(name: str):
+    spec = importlib.util.spec_from_file_location(name, Path(__file__).parents[1] / "pipeline" / f"{name}.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
 
 
 def fake_clusterer():
@@ -49,32 +50,34 @@ def test_placeholder_names_one_per_cluster():
     ]
 
 
-def test_compose_family_text_appends_iupac_when_present():
+def test_compose_namer_text_appends_iupac_only_for_the_structure_map():
+    label = load_stage("04_label_topics")
     corpus = pd.DataFrame(
         {
             "description": ["The molecule is an alkane.", "The molecule is a mystery.  ", "The molecule is a salt."],
             "pubchem_iUPACName": ["ethane", None, ""],
         }
     )
-    out = families.compose_family_text(corpus).tolist()
-    assert out == [
+    assert label.compose_namer_text(corpus, "morgan").tolist() == [
         "The molecule is an alkane. IUPAC name: ethane.",
         "The molecule is a mystery.",
         "The molecule is a salt.",
     ]
+    assert label.compose_namer_text(corpus, "text").tolist() == corpus["description"].str.strip().tolist()
 
 
-def test_spread_report_counts_regions_to_cover_most_members():
-    families_df = pd.DataFrame({"cid": range(10), "label_layer_0": ["Steroids"] * 5 + ["Sugars"] * 4 + ["Unlabelled"]})
-    labels_df = pd.DataFrame(
+def test_spread_rows_count_other_map_regions_to_cover_most_members():
+    agreement = load_stage("07_structure_agreement")
+    own = pd.DataFrame({"cid": range(10), "label_layer_0": ["Steroids"] * 5 + ["Sugars"] * 4 + ["Unlabelled"]})
+    other = pd.DataFrame(
         {
             "cid": range(10),
-            # Steroids sit in one map region; Sugars are split evenly over three (one member unlabelled).
+            # Steroids sit in one region of the other map; Sugars are split over three (one member unlabelled).
             "label_layer_0": ["Hormones"] * 5 + ["A", "B", "C", "Unlabelled", "Z"],
         }
     )
-    rows = families.spread_rows(families_df, "label_layer_0", labels_df, "label_layer_0", share=0.8)
-    by_name = {r["family"]: r for r in rows}
+    rows = agreement.spread_rows(own, "label_layer_0", other, "label_layer_0", share=0.8)
+    by_name = {r["region"]: r for r in rows}
     assert by_name["Steroids"]["regions_for_share"] == 1 and by_name["Steroids"]["top_region"] == "Hormones"
     assert by_name["Sugars"]["regions_for_share"] == 3  # all three regions of the labelled members for 80% of them
     assert by_name["Sugars"]["unlabelled_share"] == 0.25

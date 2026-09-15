@@ -1,10 +1,12 @@
-"""Stage 05: render the interactive map -> docs/index.html + docs/chebi20_*.zip (externalised data).
+"""Stage 05: render an interactive map -> docs/index.html + docs/chebi20_*.zip (externalised data), or docs/morgan/
+for the structure map (`--layout morgan`).
 
-Reads corpus.parquet, umap_coords.npz, labels.parquet, structure_agreement.parquet (stage 07: the structural
-coherence colormap and the nearest-by-structure hover line) and families.parquet (stage 08: the structural-family
-colormap and hover line). The data files are written beside the HTML and
-fetched relative to it, so the map must be served over HTTP (`make serve`), never opened via file://.
-Open Graph tags are added to the page head so a shared link renders as a card.
+Reads the corpus, the layout, its labels and its stage 07 agreement file (the coherence colormap and the
+nearest-in-the-other-space hover line), plus the other map's labels for a cross colormap and hover line (the text
+map shows each molecule's structural family, the structure map its description-map region). The data files are
+written beside the HTML and fetched relative to it, so the map must be served over HTTP (`make serve`), never
+opened via file://. Open Graph tags are added to the page head so a shared link renders as a card, and the
+subtitle links to the other map.
 """
 
 import argparse
@@ -134,52 +136,51 @@ def load_structure(files: dict, cids: np.ndarray) -> pd.DataFrame:
     if not files["structure"].exists():
         raise SystemExit(f"{files['structure']} is missing: run stage 07 (`make structure`) before rendering")
     structure = pd.read_parquet(files["structure"])
-    assert (structure["cid"].to_numpy() == cids).all(), "structure_agreement.parquet is not aligned with corpus.parquet"
+    assert (structure["cid"].to_numpy() == cids).all(), f"{files['structure'].name} is not aligned with corpus.parquet"
     return structure
 
 
-def load_families(files: dict, cids: np.ndarray) -> pd.Series:
-    """The structural family of each molecule at the legend layer (the layer with about 30 families)."""
-    if not files["families"].exists():
-        raise SystemExit(f"{files['families']} is missing: run stage 08 (`make families`) before rendering")
-    families = pd.read_parquet(files["families"])
-    assert (families["cid"].to_numpy() == cids).all(), "families.parquet is not aligned with corpus.parquet"
-    cols = [c for c in families.columns if c.startswith("label_layer_")]
-    col = min(cols, key=lambda c: abs(families[c].nunique() - 30))
-    print(f"structural families from {col}: {families[col].nunique() - 1} named")
-    return families[col]
+def load_cross_labels(other_files: dict, cids: np.ndarray) -> pd.Series | None:
+    """The other map's region of each molecule, from its layer with about CROSS_LAYER_TARGET regions."""
+    if not other_files["labels"].exists():
+        print(f"{other_files['labels'].name} does not exist yet: no cross colormap or hover line")
+        return None
+    labels = pd.read_parquet(other_files["labels"])
+    assert (labels["cid"].to_numpy() == cids).all(), f"{other_files['labels'].name} is not aligned with corpus.parquet"
+    cols = [c for c in labels.columns if c.startswith("label_layer_")]
+    col = min(cols, key=lambda c: abs(labels[c].nunique() - config.CROSS_LAYER_TARGET))
+    print(f"cross labels from {other_files['labels'].name} {col}: {labels[col].nunique() - 1} named")
+    return labels[col].fillna("Unlabelled")
 
 
-def nearest_by_structure(structure: pd.DataFrame, names: dict) -> pd.Series:
-    """One hover line per molecule naming its nearest fingerprint neighbours, or "" where none is close enough.
-
-    Tiny molecules have near-empty fingerprints and their nearest neighbours are noise, so neighbours below the
-    Tanimoto floor are left out and the line disappears exactly where it would mislead.
-    """
+def nearest_line(structure: pd.DataFrame, names: dict, label: str, min_similarity: float) -> pd.Series:
+    """One hover line per molecule naming its nearest neighbours in the other space, or "" where none is close
+    enough. Tiny molecules have near-empty fingerprints and their nearest neighbours by structure are noise, so
+    neighbours below the similarity floor are left out and the line disappears exactly where it would mislead."""
 
     def line(cids, sims) -> str:
         shown = zip(cids[: config.STRUCTURE_NEIGHBOURS_SHOWN], sims[: config.STRUCTURE_NEIGHBOURS_SHOWN])
-        parts = [f"{esc(names[c])} ({s:.2f})" for c, s in shown if s >= config.STRUCTURE_NEIGHBOUR_MIN_TANIMOTO]
-        return "Nearest by structure: " + " · ".join(parts) if parts else ""
+        parts = [f"{esc(names[c])} ({s:.2f})" for c, s in shown if s >= min_similarity]
+        return f"{label}: " + " · ".join(parts) if parts else ""
 
-    pairs = zip(structure["morgan_neighbour_cids"], structure["morgan_neighbour_tanimoto"])
+    pairs = zip(structure["neighbour_cids"], structure["neighbour_similarity"])
     return pd.Series([line(c, s) for c, s in pairs])
 
 
 def build_point_data(
-    corpus: pd.DataFrame, nearest: pd.Series | None = None, family: pd.Series | None = None
+    corpus: pd.DataFrame, nearest: pd.Series | None = None, cross: pd.Series | None = None, cross_label: str = ""
 ) -> pd.DataFrame:
     """One HTML column per molecule (`body`) that is both the hovercard and the search text, plus the CID.
 
     Storing the description once matters: the hover data ships as one gzipped JSON file, and a separate
     search column would double it. Search is a substring match over the column, so the identifiers line at
-    the bottom of the card is what makes name, IUPAC name, formula and CID searchable. The nearest-by-structure
-    line (`nearest`, from stage 07) and the structural family (`family`, from stage 08) are searchable for the
-    same reason: a name also finds the molecules structurally nearest to it, and a family name finds its members.
+    the bottom of the card is what makes name, IUPAC name, formula and CID searchable. The nearest-neighbour
+    line (`nearest`, from stage 07) and the other map's region (`cross`) are searchable for the same reason: a
+    name also finds the molecules nearest to it, and a region name finds its members.
     """
     corpus = corpus.assign(
         nearest="" if nearest is None else nearest.to_numpy(),
-        family="" if family is None else family.replace("Unlabelled", "").to_numpy(),
+        cross="" if cross is None else cross.replace("Unlabelled", "").to_numpy(),
     )
 
     def facts_line(row) -> str:
@@ -215,7 +216,7 @@ def build_point_data(
             + "".join(
                 f'<div style="font-size:11.5px;color:#57606a;margin-top:6px;line-height:1.5;">{line}</div>'
                 for line in (
-                    f"Structural family: {esc(row['family'])}" if row["family"] else "",
+                    f"{cross_label}: {esc(row['cross'])}" if row["cross"] else "",
                     row["nearest"],
                 )
                 if line
@@ -228,18 +229,18 @@ def build_point_data(
     return pd.DataFrame({"cid": corpus["cid"].to_numpy(), "body": corpus.apply(body, axis=1).to_numpy()})
 
 
-def add_open_graph(html_path, n_points: int) -> None:
+def add_open_graph(html_path, n_points: int, layout: str) -> None:
     og = {
-        "og:title": config.MAP_TITLE,
+        "og:title": config.map_title(layout),
         "og:description": (
-            f"{n_points:,} molecules from the ChEBI-20 dataset, laid out by the meaning of their ChEBI "
-            "descriptions. Pan, zoom, hover and search."
+            f"{n_points:,} molecules from the ChEBI-20 dataset, laid out by "
+            f"{config.LAYOUTS[layout]['positioned_by']}. Pan, zoom, hover and search."
         ),
         "og:type": "website",
-        "og:url": config.MAP_URL,
+        "og:url": config.map_url(layout),
     }
     if (html_path.parent / "social-preview.png").exists():
-        og["og:image"] = config.MAP_URL + "social-preview.png"
+        og["og:image"] = config.map_url(layout) + "social-preview.png"
         og["twitter:card"] = "summary_large_image"
     tags = "\n".join(f'<meta property="{k}" content="{html.escape(v, quote=True)}">' for k, v in og.items())
     text = html_path.read_text(encoding="utf-8")
@@ -250,15 +251,19 @@ def add_open_graph(html_path, n_points: int) -> None:
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--embedding", default=config.EMBED_MODEL_KEY, choices=sorted(config.EMBED_MODELS))
+    ap.add_argument("--layout", default="text", choices=sorted(config.LAYOUTS))
     args = ap.parse_args()
-    files = config.keyed_files(args.embedding)
+    layout, other = args.layout, config.other_layout(args.layout)
+    files = config.keyed_files(args.embedding, layout)
+    other_files = config.keyed_files(args.embedding, other)
+    spec = config.LAYOUTS[layout]
     out_dir = files["map_dir"]
     out_dir.mkdir(parents=True, exist_ok=True)
 
     corpus = pd.read_parquet(config.PATHS["corpus"])
     cids = corpus["cid"].to_numpy()
     lay = np.load(files["umap"], allow_pickle=True)
-    assert (lay["cid"] == cids).all(), "umap_coords.npz is not aligned with corpus.parquet"
+    assert (lay["cid"] == cids).all(), f"{files['umap'].name} is not aligned with corpus.parquet"
     coords = lay["coords"]
     label_layers = load_label_layers(files, cids)
     labels_meta = json.loads(files["labels_meta"].read_text())
@@ -266,8 +271,31 @@ def main() -> None:
     if placeholder:
         print("labels are placeholders (stage 04 --preview); rendering an unnamed preview")
     structure = load_structure(files, cids)
-    family = load_families(files, cids)
-    extra = build_point_data(corpus, nearest_by_structure(structure, dict(zip(cids, corpus["name"]))), family)
+    cross = load_cross_labels(other_files, cids)
+    # What the hover and cross colormap call things depends on which map this is.
+    if layout == "text":
+        nearest_label, cross_label, cross_other = "Nearest by structure", "Structural family", "Other family"
+        other_name = "structure"
+        coherence_meta = {
+            "field": "coherence",
+            "description": (
+                "Structural coherence (chemical similarity of map neighbours, 0 to 1; noisy for tiny molecules)"
+            ),
+            "kind": "continuous",
+            "cmap": "plasma",
+        }
+    else:
+        nearest_label, cross_label, cross_other = "Nearest by description", "Description-map region", "Other region"
+        other_name = "description"
+        coherence_meta = {
+            "field": "coherence",
+            "description": "Description coherence (how alike the descriptions of map neighbours are, 0 to 1)",
+            "kind": "continuous",
+            "cmap": "plasma",
+        }
+    names = dict(zip(cids, corpus["name"]))
+    nearest = nearest_line(structure, names, nearest_label, spec["neighbour_min_similarity"])
+    extra = build_point_data(corpus, nearest, cross, cross_label)
 
     organism_meta, organism_vals = categorical(
         "organism",
@@ -289,14 +317,6 @@ def main() -> None:
         "color_mapping": {k: v for k, v in CHARGE_BUCKETS if k in set(charge_vals.tolist())},
         "show_legend": True,
     }
-    # Stage 08: families clustered in a fingerprint layout, named for their shared structure. Coloured on this
-    # map, a family that the descriptions scatter by use or source shows up sprayed across several regions.
-    family_meta, family_vals = categorical(
-        "family",
-        f"Structural family (largest {config.FAMILY_LEGEND_TOP_N} of {family.nunique() - 1}, by fingerprint)",
-        top_n(family.replace("Unlabelled", ""), config.FAMILY_LEGEND_TOP_N, "Other family", "Unlabelled"),
-        neutral="Unlabelled",
-    )
     split_meta, split_vals = categorical("split", "ChEBI-20 split", corpus["split"].to_numpy())
     mw = corpus["pubchem_molecularWeight"].astype(float)
     mw_vals = np.log10(mw.fillna(mw.median()).clip(lower=1)).to_numpy()
@@ -309,18 +329,35 @@ def main() -> None:
         "kind": "continuous",
         "cmap": "cividis",
     }
-    # Stage 07: Tanimoto similarity of a molecule's map neighbours as a share of what its fingerprint neighbours
-    # reach. High where the description is effectively a structure (lipids), low where it groups by use or source.
+    # Stage 07: how far this map's neighbourhoods agree with the other space; see config.COHERENCE_MIN_SPAN.
     coherence_vals = structure["coherence"].to_numpy(dtype=float)
-    coherence_meta = {
-        "field": "coherence",
-        "description": (
-            "Structural coherence (chemical similarity of map neighbours, 0 to 1; noisy for tiny molecules)"
-        ),
-        "kind": "continuous",
-        "cmap": "plasma",
-    }
+    rawdata = [organism_vals, role_vals]
+    metadata = [organism_meta, role_meta]
+    if cross is not None:
+        # The other map's regions coloured onto this one: a region that this map scatters shows up sprayed about.
+        n_total = cross.nunique() - 1
+        if config.CROSS_LEGEND_TOP_N < n_total:
+            description = (
+                f"{cross_label} (largest {config.CROSS_LEGEND_TOP_N} of {n_total} regions of the {other_name} map)"
+            )
+        else:
+            description = f"{cross_label} (the {other_name} map's {n_total} coarsest regions)"
+        cross_meta, cross_vals = categorical(
+            "cross",
+            description,
+            top_n(cross.replace("Unlabelled", ""), config.CROSS_LEGEND_TOP_N, cross_other, "Unlabelled"),
+            neutral="Unlabelled",
+        )
+        rawdata.append(cross_vals)
+        metadata.append(cross_meta)
+    rawdata += [charge_vals, mw_vals, xlogp_vals, coherence_vals, split_vals]
+    metadata += [charge_meta, mw_meta, xlogp_meta, coherence_meta, split_meta]
 
+    link, link_text = (
+        ("morgan/", "see them laid out by chemical structure")
+        if layout == "text"
+        else ("../", "see them laid out by description")
+    )
     plot = datamapplot.create_interactive_plot(
         coords,
         *label_layers,
@@ -330,10 +367,10 @@ def main() -> None:
         on_click=ON_CLICK,
         enable_search=True,
         search_field="body",
-        title=config.MAP_TITLE,
+        title=config.map_title(layout),
         sub_title=(
-            f"{len(corpus):,} molecules from the ChEBI-20 dataset, positioned by the meaning of their ChEBI "
-            "descriptions · region names generated by Claude"
+            f"{len(corpus):,} molecules from the ChEBI-20 dataset, positioned by {spec['positioned_by']} · "
+            f'region names generated by Claude · <a href="{link}" style="color:inherit;">{link_text}</a>'
             + ("" if args.embedding == config.EMBED_MODEL_KEY else f" · exploration build: {args.embedding}")
             + (" · UNNAMED PREVIEW" if placeholder else "")
         ),
@@ -341,26 +378,8 @@ def main() -> None:
         cvd_safer=True,
         noise_label="Unlabelled",
         initial_zoom_fraction=config.MAP_INITIAL_ZOOM_FRACTION,
-        colormap_rawdata=[
-            organism_vals,
-            role_vals,
-            family_vals,
-            charge_vals,
-            mw_vals,
-            xlogp_vals,
-            coherence_vals,
-            split_vals,
-        ],
-        colormap_metadata=[
-            organism_meta,
-            role_meta,
-            family_meta,
-            charge_meta,
-            mw_meta,
-            xlogp_meta,
-            coherence_meta,
-            split_meta,
-        ],
+        colormap_rawdata=rawdata,
+        colormap_metadata=metadata,
         custom_css=CUSTOM_CSS,
         custom_js=CUSTOM_JS,
         inline_data=False,
@@ -368,7 +387,7 @@ def main() -> None:
     )
     html_path = out_dir / "index.html"
     plot.save(str(html_path))
-    add_open_graph(html_path, len(corpus))
+    add_open_graph(html_path, len(corpus), layout)
 
     print("output sizes:")
     total = 0
@@ -379,7 +398,8 @@ def main() -> None:
     print(f"  {total / 1e6:8.2f} MB  total")
     n_b64 = len(re.findall(r"base64,", html_path.read_text(encoding="utf-8")))
     print(f"base64 blobs still inlined in index.html: {n_b64}")
-    print(f"wrote {html_path}; serve with `make serve` and open http://127.0.0.1:8765/")
+    rel = html_path.relative_to(config.DOCS_DIR).parent if html_path.is_relative_to(config.DOCS_DIR) else ""
+    print(f"wrote {html_path}; serve with `make serve` and open http://127.0.0.1:8765/{rel}")
 
 
 if __name__ == "__main__":
