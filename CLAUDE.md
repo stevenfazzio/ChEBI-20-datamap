@@ -145,7 +145,7 @@ refetch it. Stage 01 skips any PubChem batch file that already exists.
   viewer can find on the structure map. Coherence on both maps is floor-corrected, (map - random) / (ceiling -
   random), because description cosines have a floor of 0.78; that dropped the text map's mean from 0.55 to
   0.44 without reordering regions. An earlier stage 08 that clustered the fingerprint layout coarsely (base 100,
-  112/29/7 "families") was superseded by this; its `data/families*` files are obsolete. A Murcko-scaffold
+  112/29/7 "families") was superseded by this and its `data/families*` files were deleted. A Murcko-scaffold
   colormap was measured and dropped: 7,619 distinct scaffolds, 25% acyclic, benzene 6.6%, and the next 14
   scaffolds together under 12%, so "Other" would have been most of the map.
 
