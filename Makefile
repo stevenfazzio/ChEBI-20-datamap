@@ -1,4 +1,4 @@
-.PHONY: install lint format test fetch enrich embed umap label visualize preview map serve clean
+.PHONY: install lint format test fetch enrich embed umap label structure visualize preview map serve clean
 
 install:
 	uv sync --extra dev
@@ -31,6 +31,10 @@ label:
 	OMP_NUM_THREADS=1 TOKENIZERS_PARALLELISM=false HF_HUB_OFFLINE=1 PYTHONUNBUFFERED=1 \
 		uv run python pipeline/04_label_topics.py
 
+# After label (its per-region report reads the labels), before visualize (which reads its output).
+structure:
+	uv run python pipeline/07_structure_agreement.py
+
 # Run before visualize: stage 05 uses the PNG as the Open Graph image when it exists.
 preview:
 	uv run python pipeline/06_social_preview.py
@@ -38,7 +42,7 @@ preview:
 visualize:
 	uv run python pipeline/05_visualize.py
 
-map: embed umap label preview visualize
+map: embed umap label structure preview visualize
 
 # The map fetches its data files relative to its origin, so it must be served, never opened via file://.
 serve:

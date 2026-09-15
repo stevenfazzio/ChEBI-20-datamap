@@ -19,11 +19,12 @@ uv run python pipeline/01_enrich.py         # PubChem properties per CID + role 
 uv run python pipeline/02_embed.py          # Qwen3-Embedding-4B on the descriptions -> data/embeddings.npz
 uv run python pipeline/03_reduce_umap.py    # UMAP -> 2-d, fixed seed -> data/umap_coords.npz
 uv run python pipeline/04_label_topics.py   # Toponymy + Claude region names -> data/labels.parquet
+uv run python pipeline/07_structure_agreement.py # Morgan fingerprints vs the map -> data/structure_agreement.parquet
 uv run python pipeline/06_social_preview.py # static card -> docs/social-preview.png (run before 05)
 uv run python pipeline/05_visualize.py      # DataMapPlot -> docs/index.html + docs/chebi20_*.zip
 ```
 
-`make fetch|enrich|embed|umap|label|preview|visualize|map` wrap the same commands (`map` runs 02-06); `make lint`,
+`make fetch|enrich|embed|umap|label|structure|preview|visualize|map` wrap the same commands (`map` runs 02-07); `make lint`,
 `make test`, `make serve` (the map fetches its data files relative to its origin, so it must be served,
 never opened via `file://`). Useful flags: `01_enrich.py --limit 50` and `02_embed.py --limit 200` are
 smoke tests that write nothing; `04_label_topics.py --sweep` reports region counts per layer at several
@@ -44,8 +45,8 @@ reaches the pod as a remote `.env`, never on a command line. The pod is deleted 
 and the account's registered SSH key at `~/.ssh/id_ed25519`.
 
 Stage scripts are run from the repo root; they import sibling modules (`config`, `io_utils`, `extract`,
-`embedder`, `remote`) because `pipeline/` is `sys.path[0]` when a script there is executed. Tests get the
-same path via `conftest.py`.
+`embedder`, `remote`, `structure`) because `pipeline/` is `sys.path[0]` when a script there is executed. Tests load stage scripts by path
+with importlib, or put `pipeline/` on `sys.path` themselves.
 
 ## Data layout
 
@@ -62,6 +63,8 @@ data/embeddings.npz                    cid + unit-norm float32 embeddings; embed
 data/umap_coords.npz                   cid + 2-d layout; umap_meta.json records the parameters
 data/labels.parquet                    cid + cluster_layer_i (int, -1 = unlabelled) + label_layer_i (name); layer 0 is FINEST
 data/topic_names.json                  region names per layer; cluster_tree.json the parent edges; labels_meta.json the run record
+data/structure_agreement.parquet       cid + Tanimoto of map/text/fingerprint neighbours, coherence, overlaps, 3 nearest by fingerprint (stage 07)
+data/structure_agreement_meta.json     fingerprint spec, summary tables, per-region mean coherence for every layer
 docs/index.html                        the map; docs/chebi20_{point,meta,label}_data*.zip its externalised data
 ```
 
@@ -79,8 +82,8 @@ refetch it. Stage 01 skips any PubChem batch file that already exists.
 - `uv` for the environment, `ruff` for lint and format (line length 120, isort with local modules as
   first-party). Python 3.12 (`.python-version`).
 - Fixed `random_state` on UMAP; `cvd_safer=True` and glasbey palettes in DataMapPlot; search on a
-  composed field; hovercard with name, formula, weight, charge, XLogP, PubChem structure image and the
-  description; click opens the PubChem compound page. No histogram, no topic tree. See
+  composed field; hovercard with name, formula, weight, charge, XLogP, PubChem structure image, the
+  description and the two nearest molecules by Morgan fingerprint (stage 07); click opens the PubChem compound page. No histogram, no topic tree. See
   `~/.claude/skills/datamap` for the full defaults and `~/.claude/skills/toponymy` before touching stage 04.
 
 ## Decisions so far (2026-09-15)
@@ -114,6 +117,16 @@ refetch it. Stage 01 skips any PubChem batch file that already exists.
 - **Externalised data.** The map is headed for GitHub Pages and meant to be shared by link, so stage 05
   renders with `inline_data=False`; the zips sit beside `docs/index.html` and are fetched relative to it.
   Open Graph tags are injected into the head; a `docs/social-preview.png`, if present, becomes the card image.
+- **Structural agreement, not a second map (2026-09-15).** Stage 07 compares the map with Morgan fingerprints
+  (radius 2, 2,048 bits, chirality on, k = 15, exact neighbour search) and feeds stage 05 a "structural
+  coherence" colormap (Tanimoto of map neighbours over the fingerprint ceiling, floor 0.05) and a hover line
+  naming the two nearest molecules by fingerprint (three are stored; those below Tanimoto 0.3 are omitted;
+  the names are searchable because the hover body is the search field). Finding: text and fingerprint
+  neighbourhoods agree on 20% of neighbours (median 13%); text neighbours have mean Tanimoto 0.38 against a
+  0.58 ceiling and 0.09 floor; agreement tracks molecule size only. Lipid regions are structural, agrochemical
+  and small-molecule regions are not. A fingerprint-based map was considered and deferred; the finding says it
+  would be a genuinely different view. A structural-family colormap (cluster the fingerprint space, colour
+  this map by it) is the natural next step and is already half of that second map.
 
 ## Data facts (ChEBI-20 as published, fetched 2026-09-15)
 
@@ -124,6 +137,10 @@ refetch it. Stage 01 skips any PubChem batch file that already exists.
   lists are 18,592 distinct strings, so they are search material rather than a colormap.
 - SMILES quirk for the future structure map: 4,965 SMILES contain a doubled backslash (`\\`) where the
   published files escaped the bond-direction character. Parse with that in mind; RDKit is not a v1 dependency.
+- All 33,008 SMILES parse with RDKit, with or without unescaping the doubled backslash. Morgan r2/2048 with
+  chirality gives 29,355 distinct fingerprints (25,836 without: stereoisomers collapse), none empty, median 41
+  bits set. 1,522 SMILES are multi-fragment (salts); 237 exceed 500 characters (max 1,598), which matters for
+  any SMILES transformer with a token limit.
 
 ## Current state (2026-09-15)
 
@@ -145,8 +162,15 @@ and Runpod's "no longer any instances available" create error is a placement fai
 `remote.py` now walks on to the next candidate instead of raising. `04_label_topics.py --preview` writes
 placeholder names so stage 05 can be iterated on without LLM calls; stage 05 flags such a build in its subtitle.
 
+Stage 07 added the same day: `data/structure_agreement.parquet` (28 s locally), the structural-coherence colormap and
+the nearest-by-structure hover line. Output is now `index.html` 0.18 MB plus 8.0 MB of data zips, of which the hover
+text is 7.05 MB (two neighbour names per molecule cost 1.0 MB compressed; a third would cost 0.4 MB more).
+
 Browser notes (in-app Chromium pane, 800 x 600): the externalised map logs one "deck.gl: assertion failed" (after a
 "Pixel project matrix not invertible" warning) on first paint, before the data zips arrive, and then renders and
 behaves normally; the inline sibling map does not log it. Treated as benign. "Font IBM Plex Sans did not load" is the
 pane blocking Google Fonts. At the overview in that small pane only one or two coarsest labels fit; label density at
 a real screen size has not been checked yet.
+A freshly opened pane can also leave the canvas blank on its very first load with every data file at 100% and the
+layers populated (seen 2026-09-15); navigating away and back paints it. Compare against a reload before
+suspecting the build.

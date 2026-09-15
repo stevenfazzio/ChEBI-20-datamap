@@ -103,6 +103,8 @@ def keyed_files(key: str = EMBED_MODEL_KEY) -> dict[str, Path]:
         "topic_names": DATA_DIR / f"topic_names{suffix}.json",
         "cluster_tree": DATA_DIR / f"cluster_tree{suffix}.json",
         "labels_meta": DATA_DIR / f"labels_meta{suffix}.json",
+        "structure": DATA_DIR / f"structure_agreement{suffix}.parquet",
+        "structure_meta": DATA_DIR / f"structure_agreement_meta{suffix}.json",
         # Exploration builds render into data/; the map's model renders straight into docs/ (stage 05).
         "map_dir": DOCS_DIR if key == EMBED_MODEL_KEY else DATA_DIR / f"map{suffix}",
     }
@@ -170,6 +172,25 @@ OBJECT_DESCRIPTION = "natural-language descriptions of chemical compounds from t
 CORPUS_DESCRIPTION = (
     "the ChEBI-20 dataset: 33,008 molecules paired with their ChEBI descriptions, which state each "
     "compound's chemical class, structural relationships, biological roles and source organisms"
+)
+
+# ── Structural agreement (stage 07) ──────────────────────────────────────────
+# Morgan fingerprints of the SMILES, the cheminformatics baseline for "structurally similar". Radius 2 with
+# 2,048 bits is the ECFP4-equivalent everyone compares against. Chirality is on because 20,039 SMILES carry
+# stereocentres and stereoisomer pairs are common here; without it they share one fingerprint.
+MORGAN_RADIUS = 2
+MORGAN_N_BITS = 2048
+MORGAN_CHIRALITY = True
+AGREEMENT_K = UMAP_N_NEIGHBORS  # neighbourhood size for every space compared; matches the layout's own
+# coherence = Tanimoto of a molecule's map neighbours / Tanimoto of its fingerprint neighbours (the ceiling).
+# Tiny ions have near-empty fingerprints and a ceiling near zero; the floor keeps the ratio finite there.
+COHERENCE_CEILING_FLOOR = 0.05
+STRUCTURE_NEIGHBOURS_STORED = 3  # nearest fingerprint neighbours kept per molecule (cheap in the parquet)
+# Shown in the hovercard. Each name costs ~0.45 MB of compressed hover data (measured 2026-09-15: three names
+# added 1.35 MB to a 6 MB file, two added 0.95 MB); the Tanimoto values beside them cost almost nothing.
+STRUCTURE_NEIGHBOURS_SHOWN = 2
+STRUCTURE_NEIGHBOUR_MIN_TANIMOTO = (
+    0.3  # below this a "nearest" neighbour is noise (1.7% of molecules have none above it)
 )
 
 # ── Rendering (stage 05) ─────────────────────────────────────────────────────

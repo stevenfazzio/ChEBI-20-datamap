@@ -1,6 +1,7 @@
 """Stage 05: render the interactive map -> docs/index.html + docs/chebi20_*.zip (externalised data).
 
-Reads corpus.parquet, umap_coords.npz and labels.parquet. The data files are written beside the HTML and
+Reads corpus.parquet, umap_coords.npz, labels.parquet and structure_agreement.parquet (stage 07: the structural
+coherence colormap and the nearest-by-structure hover line). The data files are written beside the HTML and
 fetched relative to it, so the map must be served over HTTP (`make serve`), never opened via file://.
 Open Graph tags are added to the page head so a shared link renders as a card.
 """
@@ -128,13 +129,40 @@ def load_label_layers(files: dict, cids: np.ndarray) -> list[np.ndarray]:
     return layers
 
 
-def build_point_data(corpus: pd.DataFrame) -> pd.DataFrame:
+def load_structure(files: dict, cids: np.ndarray) -> pd.DataFrame:
+    if not files["structure"].exists():
+        raise SystemExit(f"{files['structure']} is missing: run stage 07 (`make structure`) before rendering")
+    structure = pd.read_parquet(files["structure"])
+    assert (structure["cid"].to_numpy() == cids).all(), "structure_agreement.parquet is not aligned with corpus.parquet"
+    return structure
+
+
+def nearest_by_structure(structure: pd.DataFrame, names: dict) -> pd.Series:
+    """One hover line per molecule naming its nearest fingerprint neighbours, or "" where none is close enough.
+
+    Tiny molecules have near-empty fingerprints and their nearest neighbours are noise, so neighbours below the
+    Tanimoto floor are left out and the line disappears exactly where it would mislead.
+    """
+
+    def line(cids, sims) -> str:
+        shown = zip(cids[: config.STRUCTURE_NEIGHBOURS_SHOWN], sims[: config.STRUCTURE_NEIGHBOURS_SHOWN])
+        parts = [f"{esc(names[c])} ({s:.2f})" for c, s in shown if s >= config.STRUCTURE_NEIGHBOUR_MIN_TANIMOTO]
+        return "Nearest by structure: " + " · ".join(parts) if parts else ""
+
+    pairs = zip(structure["morgan_neighbour_cids"], structure["morgan_neighbour_tanimoto"])
+    return pd.Series([line(c, s) for c, s in pairs])
+
+
+def build_point_data(corpus: pd.DataFrame, nearest: pd.Series | None = None) -> pd.DataFrame:
     """One HTML column per molecule (`body`) that is both the hovercard and the search text, plus the CID.
 
     Storing the description once matters: the hover data ships as one gzipped JSON file, and a separate
     search column would double it. Search is a substring match over the column, so the identifiers line at
-    the bottom of the card is what makes name, IUPAC name, formula and CID searchable.
+    the bottom of the card is what makes name, IUPAC name, formula and CID searchable. The nearest-by-structure
+    line (`nearest`, from stage 07) is searchable for the same reason: a name also finds the molecules it is
+    structurally nearest to.
     """
+    corpus = corpus.assign(nearest="" if nearest is None else nearest.to_numpy())
 
     def facts_line(row) -> str:
         parts = [formula_html(row["pubchem_molecularFormula"])]
@@ -166,7 +194,12 @@ def build_point_data(corpus: pd.DataFrame) -> pd.DataFrame:
             f"{esc(row['name'])}</div>"
             f'<div style="font-size:11.5px;color:#57606a;margin-top:3px;line-height:1.5;">{facts_line(row)}</div>'
             f'<div style="font-size:12.5px;line-height:1.45;margin-top:8px;">{esc(row["description"])}</div>'
-            f'<div style="font-size:11px;color:#8b949e;margin-top:6px;line-height:1.5;overflow-wrap:anywhere;">'
+            + (
+                f'<div style="font-size:11.5px;color:#57606a;margin-top:6px;line-height:1.5;">{row["nearest"]}</div>'
+                if row["nearest"]
+                else ""
+            )
+            + '<div style="font-size:11px;color:#8b949e;margin-top:6px;line-height:1.5;overflow-wrap:anywhere;">'
             + "<br>".join(ids)
             + "</div>"
         )
@@ -211,7 +244,8 @@ def main() -> None:
     placeholder = labels_meta["namer_model"].startswith("placeholder")
     if placeholder:
         print("labels are placeholders (stage 04 --preview); rendering an unnamed preview")
-    extra = build_point_data(corpus)
+    structure = load_structure(files, cids)
+    extra = build_point_data(corpus, nearest_by_structure(structure, dict(zip(cids, corpus["name"]))))
 
     organism_meta, organism_vals = categorical(
         "organism",
@@ -245,6 +279,17 @@ def main() -> None:
         "kind": "continuous",
         "cmap": "cividis",
     }
+    # Stage 07: Tanimoto similarity of a molecule's map neighbours as a share of what its fingerprint neighbours
+    # reach. High where the description is effectively a structure (lipids), low where it groups by use or source.
+    coherence_vals = structure["coherence"].to_numpy(dtype=float)
+    coherence_meta = {
+        "field": "coherence",
+        "description": (
+            "Structural coherence (chemical similarity of map neighbours, 0 to 1; noisy for tiny molecules)"
+        ),
+        "kind": "continuous",
+        "cmap": "plasma",
+    }
 
     plot = datamapplot.create_interactive_plot(
         coords,
@@ -266,8 +311,8 @@ def main() -> None:
         cvd_safer=True,
         noise_label="Unlabelled",
         initial_zoom_fraction=config.MAP_INITIAL_ZOOM_FRACTION,
-        colormap_rawdata=[organism_vals, role_vals, charge_vals, mw_vals, xlogp_vals, split_vals],
-        colormap_metadata=[organism_meta, role_meta, charge_meta, mw_meta, xlogp_meta, split_meta],
+        colormap_rawdata=[organism_vals, role_vals, charge_vals, mw_vals, xlogp_vals, coherence_vals, split_vals],
+        colormap_metadata=[organism_meta, role_meta, charge_meta, mw_meta, xlogp_meta, coherence_meta, split_meta],
         custom_css=CUSTOM_CSS,
         custom_js=CUSTOM_JS,
         inline_data=False,
