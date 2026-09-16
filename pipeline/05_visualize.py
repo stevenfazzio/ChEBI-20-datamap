@@ -24,11 +24,8 @@ import config
 from io_utils import atomic_write_text
 
 HOVER_TEMPLATE = (
-    "<div style=\"font-family:'IBM Plex Sans',sans-serif;width:min(460px,100%);padding:8px 10px;"
-    'box-sizing:border-box;color:#1f2328;">'
-    f'<img src="{config.PUBCHEM_IMAGE_URL.format(cid="{cid}")}" alt="" loading="lazy" '
-    'style="float:right;width:120px;height:120px;margin:0 0 6px 12px;object-fit:contain;background:#fff;'
-    'border:1px solid #d0d7de;border-radius:4px;">'
+    '<div class="hc">'
+    f'<img class="hc-img" src="{config.PUBCHEM_IMAGE_URL.format(cid="{cid}")}" alt="" loading="lazy">'
     "{body}"
     '<div style="clear:both;"></div>'
     "</div>"
@@ -37,6 +34,29 @@ ON_CLICK = f"window.open(`{config.PUBCHEM_COMPOUND_URL.format(cid='{cid}')}`, `_
 
 CUSTOM_CSS = """
 .deck-tooltip { max-width: min(480px, 92vw) !important; }
+/* The hovercard. Classes rather than inline styles: the card markup is stored once per molecule in the point
+   data, so every byte of it is paid 33,008 times. */
+.hc { font-family: 'IBM Plex Sans', sans-serif; width: min(460px, 100%); padding: 8px 10px; box-sizing: border-box;
+      color: #1f2328; }
+.hc-img { float: right; width: 120px; height: 120px; margin: 0 0 6px 12px; object-fit: contain; background: #fff;
+          border: 1px solid #d0d7de; border-radius: 4px; }
+.hc-name { font-size: 14px; font-weight: 600; line-height: 1.3; overflow-wrap: anywhere; }
+.hc-facts { font-size: 11.5px; color: #57606a; margin-top: 3px; line-height: 1.5; }
+.hc-desc { font-size: 12.5px; line-height: 1.45; margin-top: 8px; }
+/* Context rows under the description: a fixed label column, so the same fact sits in the same place on every
+   card and a viewer moving quickly over the map learns where to look. */
+.hc-grid { display: grid; grid-template-columns: 88px 1fr; gap: 4px 10px; margin-top: 8px; font-size: 11.5px;
+           line-height: 1.45; }
+.hc-k { color: #57606a; font-weight: 600; font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em;
+        padding-top: 2px; }
+/* Neighbour and partner names are clamped here, not in the data: PubChem titles are sometimes IUPAC names 200
+   characters long, and the full name has to stay in the markup because the card is also the search text. */
+.hc-v > span { display: inline-block; max-width: 220px; overflow: hidden; text-overflow: ellipsis;
+               white-space: nowrap; vertical-align: bottom; }
+.hc-iupac { font-size: 11px; color: #8b949e; margin-top: 6px; line-height: 1.4; overflow-wrap: anywhere;
+            display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.hc-ids { font-size: 11px; color: #8b949e; margin-top: 2px; line-height: 1.5; }
+.hc-hidden { display: none; }  /* search material with no visual job: the plain-text formula */
 /* DataMapPlot sizes the dropdown swatch to its colour count (12px per box, up to five), so a two-category
    colormap gets a 24px swatch and its label sits 36px left of the others. Fix the swatch width and let
    the boxes share it. */
@@ -162,56 +182,70 @@ def load_rhea(cids: np.ndarray) -> pd.DataFrame:
     return rhea
 
 
+def clamp(name: str) -> str:
+    """A molecule name the card may truncate with an ellipsis (`.hc-v > span` in CUSTOM_CSS; a bare span because
+    the markup is paid per molecule and a class name costs 0.06 MB compressed)."""
+    return f"<span>{esc(name)}</span>"
+
+
 def rhea_line(rhea: pd.DataFrame, names: dict) -> pd.Series:
-    """One hover line per molecule in Rhea: its reaction count and its first partners, or "" outside Rhea."""
+    """One hover value per molecule in Rhea: its reaction count and its first partners, or "" outside Rhea."""
 
     def line(n_reactions, is_hub, partner_cids) -> str:
         if not n_reactions:
             return ""
-        head = f"Rhea: {n_reactions:,} reaction{'s' if n_reactions != 1 else ''}"
+        head = f"{n_reactions:,} reaction{'s' if n_reactions != 1 else ''}"
         if is_hub:
             return head + " (cofactor hub)"
         shown = list(partner_cids[: config.RHEA_PARTNERS_SHOWN])
         if not shown:
             return head
         more = len(partner_cids) - len(shown)
-        return head + " · partners: " + " · ".join(esc(names[c]) for c in shown) + (f" (+{more} more)" if more else "")
+        return (
+            head + " · partners: " + " · ".join(clamp(names[c]) for c in shown) + (f" (+{more} more)" if more else "")
+        )
 
     return pd.Series([line(n, h, p) for n, h, p in zip(rhea["n_reactions"], rhea["is_hub"], rhea["partner_cids"])])
 
 
-def cross_line(cross: pd.Series | None, label: str) -> pd.Series | None:
-    """The other map's region as a hover line, "" where unlabelled."""
-    if cross is None:
-        return None
-    return pd.Series([f"{label}: {esc(v)}" if v and v != "Unlabelled" else "" for v in cross])
+def region_line(*layers: pd.Series | np.ndarray) -> pd.Series:
+    """A region name as a hover value: the first layer (finest first) that names the molecule, "" where none
+    does. A quarter of molecules sit in no cluster at the finest layer but nearly all are inside a coarser one."""
+    cols = [np.asarray(layer, dtype=object) for layer in layers]
+
+    def pick(i) -> str:
+        return next((esc(c[i]) for c in cols if c[i] and c[i] != "Unlabelled"), "")
+
+    return pd.Series([pick(i) for i in range(len(cols[0]))])
 
 
-def nearest_line(structure: pd.DataFrame, names: dict, label: str, min_similarity: float) -> pd.Series:
-    """One hover line per molecule naming its nearest neighbours in the other space, or "" where none is close
+def nearest_line(structure: pd.DataFrame, names: dict, min_similarity: float, show_similarity: bool) -> pd.Series:
+    """One hover value per molecule naming its nearest neighbours in the other space, or "" where none is close
     enough. Tiny molecules have near-empty fingerprints and their nearest neighbours by structure are noise, so
-    neighbours below the similarity floor are left out and the line disappears exactly where it would mislead."""
+    neighbours below the similarity floor are left out and the row disappears exactly where it would mislead.
+    The similarity is shown only where it means something (`config.LAYOUTS[...]["neighbour_show_similarity"]`)."""
 
     def line(cids, sims) -> str:
         shown = zip(cids[: config.STRUCTURE_NEIGHBOURS_SHOWN], sims[: config.STRUCTURE_NEIGHBOURS_SHOWN])
-        parts = [f"{esc(names[c])} ({s:.2f})" for c, s in shown if s >= min_similarity]
-        return f"{label}: " + " · ".join(parts) if parts else ""
+        parts = [clamp(names[c]) + (f" ({s:.2f})" if show_similarity else "") for c, s in shown if s >= min_similarity]
+        return " · ".join(parts)
 
     pairs = zip(structure["neighbour_cids"], structure["neighbour_similarity"])
     return pd.Series([line(c, s) for c, s in pairs])
 
 
-def build_point_data(corpus: pd.DataFrame, lines: list[pd.Series] = ()) -> pd.DataFrame:
+def build_point_data(corpus: pd.DataFrame, rows: list[tuple[str, pd.Series | None]] = ()) -> pd.DataFrame:
     """One HTML column per molecule (`body`) that is both the hovercard and the search text, plus the CID.
 
     Storing the description once matters: the hover data ships as one gzipped JSON file, and a separate
-    search column would double it. Search is a substring match over the column, so the identifiers line at
-    the bottom of the card is what makes name, IUPAC name, formula and CID searchable. `lines` are extra
-    small-print lines under the description (the other map's region, the nearest molecules in the other space,
-    the Rhea reaction context), "" where a molecule has none; they are searchable for the same reason.
+    search column would double it. Search is a substring match over the column, so anything that should be
+    searchable has to be in the markup, even if the card hides it (the plain-text formula sits in a hidden span
+    because the visible one is marked up with subscripts). `rows` are (label, values) context rows rendered as
+    a label/value grid under the description (the molecule's own region, the other map's region, the nearest
+    molecules in the other space, the Rhea reaction context), "" where a molecule has none.
     """
-    lines = [ln.to_numpy() for ln in lines if ln is not None]
-    corpus = corpus.assign(extra=[[ln[i] for ln in lines if ln[i]] for i in range(len(corpus))])
+    rows = [(label, vals.to_numpy()) for label, vals in rows if vals is not None]
+    corpus = corpus.assign(context=[[(k, v[i]) for k, v in rows if v[i]] for i in range(len(corpus))])
 
     def facts_line(row) -> str:
         parts = [formula_html(row["pubchem_molecularFormula"])]
@@ -225,30 +259,17 @@ def build_point_data(corpus: pd.DataFrame, lines: list[pd.Series] = ()) -> pd.Da
         return " · ".join(p for p in parts if p)
 
     def body(row) -> str:
-        ids = [esc(row["pubchem_iUPACName"])] if isinstance(row["pubchem_iUPACName"], str) else []
-        ids.append(
-            " · ".join(
-                p
-                for p in (
-                    esc(row["name"]),
-                    esc(row["pubchem_molecularFormula"]),
-                    f"PubChem CID {row['cid']}",
-                    f"ChEBI-20 {row['split']} split",
-                )
-                if p
-            )
-        )
+        grid = "".join(f'<div class="hc-k">{k}</div><div class="hc-v">{v}</div>' for k, v in row["context"])
+        iupac = row["pubchem_iUPACName"]
+        formula = esc(row["pubchem_molecularFormula"])
         return (
-            '<div style="font-size:14px;font-weight:600;line-height:1.3;overflow-wrap:anywhere;">'
-            f"{esc(row['name'])}</div>"
-            f'<div style="font-size:11.5px;color:#57606a;margin-top:3px;line-height:1.5;">{facts_line(row)}</div>'
-            f'<div style="font-size:12.5px;line-height:1.45;margin-top:8px;">{esc(row["description"])}</div>'
-            + "".join(
-                f'<div style="font-size:11.5px;color:#57606a;margin-top:6px;line-height:1.5;">{line}</div>'
-                for line in row["extra"]
-            )
-            + '<div style="font-size:11px;color:#8b949e;margin-top:6px;line-height:1.5;overflow-wrap:anywhere;">'
-            + "<br>".join(ids)
+            f'<div class="hc-name">{esc(row["name"])}</div>'
+            f'<div class="hc-facts">{facts_line(row)}</div>'
+            f'<div class="hc-desc">{esc(row["description"])}</div>'
+            + (f'<div class="hc-grid">{grid}</div>' if grid else "")
+            + (f'<div class="hc-iupac">{esc(iupac)}</div>' if isinstance(iupac, str) else "")
+            + f'<div class="hc-ids">PubChem CID {row["cid"]} · ChEBI-20 {row["split"]} split'
+            + (f'<span class="hc-hidden"> · {formula}</span>' if formula else "")
             + "</div>"
         )
 
@@ -298,41 +319,34 @@ def main() -> None:
         print("labels are placeholders (stage 04 --preview); rendering an unnamed preview")
     structure = load_structure(files, cids)
     cross = load_cross_labels(other_files, cids)
-    # What the hover and cross colormap call things depends on which map this is.
+    # What the hover and cross colormap call things depends on which map this is. Colormap names are short
+    # noun phrases: the same string is the dropdown entry and the rotated colorbar title, and the qualifiers
+    # ("first stated" excepted, since it says what the field is) live in the README.
     if layout == "text":
         nearest_label, cross_label, cross_other = "Nearest by structure", "Structural family", "Other family"
-        other_name = "structure"
-        coherence_meta = {
-            "field": "coherence",
-            "description": (
-                "Structural coherence (chemical similarity of map neighbours, 0 to 1; noisy for tiny molecules)"
-            ),
-            "kind": "continuous",
-            "cmap": "plasma",
-        }
+        coherence_name = "Structural coherence"
     else:
         nearest_label, cross_label, cross_other = "Nearest by description", "Description-map region", "Other region"
-        other_name = "description"
-        coherence_meta = {
-            "field": "coherence",
-            "description": "Description coherence (how alike the descriptions of map neighbours are, 0 to 1)",
-            "kind": "continuous",
-            "cmap": "plasma",
-        }
+        coherence_name = "Description coherence"
+    coherence_meta = {"field": "coherence", "description": coherence_name, "kind": "continuous", "cmap": "plasma"}
     rhea = load_rhea(cids)
     names = dict(zip(cids, corpus["name"]))
     extra = build_point_data(
         corpus,
         [
-            cross_line(cross, cross_label),
-            nearest_line(structure, names, nearest_label, spec["neighbour_min_similarity"]),
-            rhea_line(rhea, names),
+            ("Region", region_line(*label_layers)),
+            (cross_label, region_line(cross) if cross is not None else None),
+            (
+                nearest_label,
+                nearest_line(structure, names, spec["neighbour_min_similarity"], spec["neighbour_show_similarity"]),
+            ),
+            ("Rhea", rhea_line(rhea, names)),
         ],
     )
 
     organism_meta, organism_vals = categorical(
         "organism",
-        "Metabolite of (first organism stated)",
+        "Metabolite organism (first stated)",
         top_n(corpus["primary_organism"], config.ORGANISM_TOP_N, "Other organism", "None stated"),
         neutral="None stated",
     )
@@ -347,7 +361,7 @@ def main() -> None:
     ec_raw = rhea["ec_class"].to_numpy()
     ec_meta, ec_vals = categorical(
         "ec_class",
-        f"Enzyme class (Rhea; {int(rhea['in_rhea'].sum()):,} molecules in a reaction)",
+        "Enzyme class (Rhea)",
         np.where(ec_raw == "", "Not in Rhea", np.where(ec_raw == "Unassigned", "In Rhea, no EC class", ec_raw)),
         neutral="Not in Rhea",
     )
@@ -360,7 +374,7 @@ def main() -> None:
         "color_mapping": {k: v for k, v in CHARGE_BUCKETS if k in set(charge_vals.tolist())},
         "show_legend": True,
     }
-    split_meta, split_vals = categorical("split", "ChEBI-20 split", corpus["split"].to_numpy())
+    split_meta, split_vals = categorical("split", "Dataset split", corpus["split"].to_numpy())
     mw = corpus["pubchem_molecularWeight"].astype(float)
     mw_vals = np.log10(mw.fillna(mw.median()).clip(lower=1)).to_numpy()
     mw_meta = {"field": "log_mw", "description": "Molecular weight (log10 Da)", "kind": "continuous", "cmap": "viridis"}
@@ -368,26 +382,21 @@ def main() -> None:
     xlogp_vals = xlogp.fillna(xlogp.median()).clip(-10, 15).to_numpy()
     xlogp_meta = {
         "field": "xlogp",
-        "description": f"XLogP (hydrophobicity; {int(xlogp.isna().sum()):,} unknown shown at the median)",
+        "description": "XLogP",
         "kind": "continuous",
         "cmap": "cividis",
     }
     # Stage 07: how far this map's neighbourhoods agree with the other space; see config.COHERENCE_MIN_SPAN.
-    coherence_vals = structure["coherence"].to_numpy(dtype=float)
+    # DataMapPlot's colorbar treats a range whose two ends are both integers as integer data and rounds every
+    # tick, so a 0-to-1 score gets ticks reading "0 0 1 1 1"; pulling the top just under 1 keeps 0.25 steps.
+    coherence_vals = np.minimum(structure["coherence"].to_numpy(dtype=float), 0.9995)
     rawdata = [organism_vals, role_vals, ec_vals]
     metadata = [organism_meta, role_meta, ec_meta]
     if cross is not None:
         # The other map's regions coloured onto this one: a region that this map scatters shows up sprayed about.
-        n_total = cross.nunique() - 1
-        if config.CROSS_LEGEND_TOP_N < n_total:
-            description = (
-                f"{cross_label} (largest {config.CROSS_LEGEND_TOP_N} of {n_total} regions of the {other_name} map)"
-            )
-        else:
-            description = f"{cross_label} (the {other_name} map's {n_total} coarsest regions)"
         cross_meta, cross_vals = categorical(
             "cross",
-            description,
+            cross_label,
             top_n(cross.replace("Unlabelled", ""), config.CROSS_LEGEND_TOP_N, cross_other, "Unlabelled"),
             neutral="Unlabelled",
         )
@@ -397,9 +406,9 @@ def main() -> None:
     metadata += [charge_meta, mw_meta, xlogp_meta, coherence_meta, split_meta]
 
     link, link_text = (
-        ("morgan/", "see them laid out by chemical structure")
+        ("morgan/", "the same molecules by structure")
         if layout == "text"
-        else ("../", "see them laid out by description")
+        else ("../", "the same molecules by description")
     )
     plot = datamapplot.create_interactive_plot(
         coords,
@@ -412,8 +421,9 @@ def main() -> None:
         search_field="body",
         title=config.map_title(layout),
         sub_title=(
-            f"{len(corpus):,} molecules from the ChEBI-20 dataset, positioned by {spec['positioned_by']} · "
-            f'region names generated by Claude · <a href="{link}" style="color:inherit;">{link_text}</a>'
+            f"{len(corpus):,} molecules positioned by {spec['positioned_by']} · region names by Claude · "
+            f'<a href="{link}" style="color:inherit;">{link_text}</a> · '
+            f'<a href="{config.REPO_URL}" style="color:inherit;">code on GitHub</a>'
             + ("" if args.embedding == config.EMBED_MODEL_KEY else f" · exploration build: {args.embedding}")
             + (" · UNNAMED PREVIEW" if placeholder else "")
         ),

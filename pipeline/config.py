@@ -272,6 +272,7 @@ LAYOUTS = {
         "positioned_by": "the meaning of their ChEBI descriptions",
         "complement": "structure",  # what stage 07 scores the map's neighbourhoods by
         "neighbour_min_similarity": 0.3,  # below this Tanimoto a "nearest" molecule is noise (1.7% have none above)
+        "neighbour_show_similarity": True,  # Tanimoto is informative on the hovercard
     },
     "morgan": {
         "metric": "jaccard",
@@ -283,9 +284,10 @@ LAYOUTS = {
         "name_overrides": STRUCTURE_NAME_OVERRIDES,
         "namer_sees_iupac": True,
         "sweep": [(6, 15), (6, 20), (6, 30), (6, 50), (6, 100)],
-        "positioned_by": "the similarity of their chemical structures (Morgan fingerprints)",
+        "positioned_by": "their chemical structure (Morgan fingerprints)",
         "complement": "description",
         "neighbour_min_similarity": 0.0,  # cosine between descriptions; every molecule has a meaningful nearest
+        "neighbour_show_similarity": False,  # description cosines floor at 0.78, so every score would read 0.9
     },
 }
 CROSS_LEGEND_TOP_N = 15  # regions of the other map shown by name in a colormap; the rest pool as "Other"
@@ -295,6 +297,7 @@ CROSS_LAYER_TARGET = 30  # the other map's layer with about this many regions su
 MAP_TITLE = "ChEBI-20 Molecule Map"
 MAP_DATA_PREFIX = "chebi20"  # docs/chebi20_point_data_0.zip and friends sit beside index.html
 MAP_URL = "https://stevenfazzio.com/ChEBI-20-datamap/"  # the user site carries the domain; github.io redirects here
+REPO_URL = "https://github.com/stevenfazzio/ChEBI-20-datamap"
 
 
 def map_url(layout: str) -> str:

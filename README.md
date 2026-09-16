@@ -13,19 +13,31 @@ ChEBI-20 (Edwards et al. 2022) pairs a PubChem compound ID and SMILES string wit
 description ChEBI curators wrote for the molecule: its chemical class, how it relates to other compounds,
 its biological roles, and where it was isolated. This map embeds those descriptions and lays them out in
 two dimensions, so molecules that ChEBI describes similarly sit near each other. Hover for the compound
-name, formula, weight, charge, XLogP, structure drawing, full description, structural family and the two
-molecules nearest to it by chemical structure; click to open the PubChem page; search by name, formula, CID,
-family or any phrase in the description. The colour menu switches between the region colouring and nine metadata views: metabolite
-organism, first-stated biological role, enzyme class from Rhea, structural family, formal charge, molecular
-weight, XLogP, structural coherence and dataset split. Molecules that take part in a Rhea reaction also get a
-hovercard line with their reaction count and reaction partners.
+name, formula, weight, charge, XLogP, structure drawing and full description, then four labelled rows in the
+same place on every card: the molecule's region (the finest named one it belongs to), its structural family, the
+two molecules nearest to it by chemical structure, and its Rhea reactions and partners. Click to open the
+PubChem page; search by name, IUPAC name, formula, CID, region, family, neighbour or any phrase in the
+description. The colour menu switches between the region colouring and nine metadata views:
+
+| Colour view | What it shows |
+|---|---|
+| Metabolite organism (first stated) | The organism of the first "<organism> metabolite" role in the description, top 12 named and the rest pooled; 26% of molecules state one. |
+| Biological role (first stated) | The first role in the "has a role as" clause, top 15 named and the rest pooled; 54% of molecules state one. "First" is ChEBI's order, which leans general-first (human before mouse, metabolite before anything) and is not a ranking of importance. |
+| Enzyme class (Rhea) | The commonest EC class among the molecule's Rhea reactions; two greys for outside Rhea and in Rhea without an EC number. |
+| Structural family | The structure map's 15 coarsest regions; a third of molecules belong to no region dense enough to name and are grey. |
+| Formal charge | PubChem's formal charge, bucketed from −3 or lower to +3 or higher. |
+| Molecular weight (log10 Da) | The colorbar is in log10 units: 2 is 100 Da, 3 is 1,000 Da. |
+| XLogP | PubChem's computed hydrophobicity; the 1,917 molecules without one are drawn at the median. |
+| Structural coherence | How structurally alike a molecule's map neighbours are, 0 to 1 (explained below); noisy for tiny molecules. |
+| Dataset split | ChEBI-20's train, validation and test split. |
 
 The second map lays the same molecules out by Morgan fingerprints of their SMILES, so molecules with similar
 substructures sit near each other regardless of what ChEBI says about them, and its regions are named for the
 structure their members share. Its views mirror the first map's: the hovercard names the two molecules nearest
-by description and the description-map region, and the colour menu offers "description-map region" and
-"description coherence". Each map links to the other from its subtitle. The cross views and the coherence
-scores are explained below.
+by description (without scores: description cosines floor at 0.78, so every score would read 0.9) and the
+description-map region, and the colour menu offers "description-map region" and "description coherence". Each
+map links to the other and to this repository from its subtitle. The cross views and the coherence scores are
+explained below.
 
 ## How it is built
 

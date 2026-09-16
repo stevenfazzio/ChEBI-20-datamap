@@ -59,14 +59,15 @@ def test_nearest_line_drops_weak_neighbours_and_escapes():
         }
     )
     names = {10: "Aspirin", 11: "R&D compound", 12: "Toluene"}
-    out = viz.nearest_line(structure, names, "Nearest by structure", 0.3)
-    assert out[0] == "Nearest by structure: Aspirin (0.90) · R&amp;D compound (0.50)"
-    assert out[1] == ""  # nothing above the floor: no line at all
-    assert out[2] == "Nearest by structure: R&amp;D compound (0.31) · Toluene (0.30)"  # the floor is inclusive
+    out = viz.nearest_line(structure, names, 0.3, show_similarity=True)
+    n = viz.clamp  # names are wrapped so CSS can truncate them; the full name stays for search
+    assert out[0] == f"{n('Aspirin')} (0.90) · {n('R&D compound')} (0.50)"
+    assert n("R&D compound") == "<span>R&amp;D compound</span>"
+    assert out[1] == ""  # nothing above the floor: no row at all
+    assert out[2] == f"{n('R&D compound')} (0.31) · {n('Toluene')} (0.30)"  # the floor is inclusive
     assert "Toluene" not in out[0]  # STRUCTURE_NEIGHBOURS_SHOWN (2) of the STRUCTURE_NEIGHBOURS_STORED (3)
-    assert viz.nearest_line(structure, names, "Nearest by description", 0.0)[1].startswith(
-        "Nearest by description: Aspirin"
-    )
+    # The structure map hides the description cosines (they all read 0.9) and has no floor.
+    assert viz.nearest_line(structure, names, 0.0, show_similarity=False)[1] == f"{n('Aspirin')} · {n('R&D compound')}"
 
 
 def test_build_point_data_adds_extra_lines_only_where_present():
@@ -83,20 +84,29 @@ def test_build_point_data_adds_extra_lines_only_where_present():
             "pubchem_iUPACName": ["ethane", None],
         }
     )
-    lines = [pd.Series(["Nearest by structure: X (0.50)", ""]), None, pd.Series(["", "Rhea: 2 reactions"])]
-    out = viz.build_point_data(corpus, lines)
-    assert "Nearest by structure: X (0.50)" in out["body"][0] and "Rhea" not in out["body"][0]
-    assert "Rhea: 2 reactions" in out["body"][1] and "Nearest" not in out["body"][1]
-    assert (
-        "margin-top:6px"
-        not in viz.build_point_data(corpus)["body"][0].split("</div>", 3)[-1].split("font-size:11px")[0]
-    )
+    rows = [
+        ("Nearest by structure", pd.Series(["X (0.50)", ""])),
+        ("Family", None),
+        ("Rhea", pd.Series(["", "2 reactions"])),
+    ]
+    out = viz.build_point_data(corpus, rows)
+    a, b = out["body"][0], out["body"][1]
+    assert '<div class="hc-k">Nearest by structure</div><div class="hc-v">X (0.50)</div>' in a and "Rhea" not in a
+    assert '<div class="hc-k">Rhea</div><div class="hc-v">2 reactions</div>' in b and "Nearest" not in b
+    assert "Family" not in a and "Family" not in b  # a missing series contributes no row
+    assert "hc-grid" not in viz.build_point_data(corpus)["body"][0]  # no rows, no grid
+    # The visible formula carries subscripts; the plain one is hidden but present, so search matches it.
+    assert "C<sub>2</sub>H<sub>6</sub>" in a and '<span class="hc-hidden"> · C2H6</span>' in a
+    assert '<div class="hc-iupac">ethane</div>' in a and "hc-iupac" not in b
+    assert "PubChem CID 2 · ChEBI-20 test split</div>" in b and "hc-hidden" not in b
 
 
-def test_cross_line_escapes_and_skips_unlabelled():
-    out = viz.cross_line(pd.Series(["Acids & Esters", "Unlabelled", ""]), "Structural family")
-    assert out.tolist() == ["Structural family: Acids &amp; Esters", "", ""]
-    assert viz.cross_line(None, "x") is None
+def test_region_line_escapes_and_skips_unlabelled():
+    out = viz.region_line(pd.Series(["Acids & Esters", "Unlabelled", ""]))
+    assert out.tolist() == ["Acids &amp; Esters", "", ""]
+    assert viz.region_line(np.array(["A", "Unlabelled"])).tolist() == ["A", ""]
+    fine, coarse = np.array(["A", "Unlabelled", "Unlabelled"]), np.array(["X", "Y", "Unlabelled"])
+    assert viz.region_line(fine, coarse).tolist() == ["A", "Y", ""]  # finest named layer wins
 
 
 def test_rhea_line_hub_partners_and_more_count():
@@ -109,7 +119,8 @@ def test_rhea_line_hub_partners_and_more_count():
     )
     names = {10: "Aspirin", 11: "R&D", 12: "C", 13: "D", 14: "E"}
     out = viz.rhea_line(rhea, names).tolist()
-    assert out[0] == "Rhea: 1,398 reactions (cofactor hub)"
-    assert out[1] == "Rhea: 12 reactions · partners: Aspirin · R&amp;D · C (+2 more)"
-    assert out[2] == "Rhea: 1 reaction"
+    n = viz.clamp
+    assert out[0] == "1,398 reactions (cofactor hub)"
+    assert out[1] == f"12 reactions · partners: {n('Aspirin')} · {n('R&D')} · {n('C')} (+2 more)"
+    assert out[2] == "1 reaction"
     assert out[3] == ""

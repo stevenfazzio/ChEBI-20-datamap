@@ -91,8 +91,9 @@ refetch it. Stage 01 skips any PubChem batch file that already exists.
 - `uv` for the environment, `ruff` for lint and format (line length 120, isort with local modules as
   first-party). Python 3.12 (`.python-version`).
 - Fixed `random_state` on UMAP; `cvd_safer=True` and glasbey palettes in DataMapPlot; search on a
-  composed field; hovercard with name, formula, weight, charge, XLogP, PubChem structure image, the
-  description and the two nearest molecules by Morgan fingerprint (stage 07); click opens the PubChem compound page. No histogram, no topic tree. See
+  composed field; hovercard with name, a facts line (formula, weight, charge, XLogP), PubChem structure image,
+  the description, then a label/value grid (region, the other map's region, nearest in the other space, Rhea)
+  and the IUPAC name and CID in small print; click opens the PubChem compound page. No histogram, no topic tree. See
   `~/.claude/skills/datamap` for the full defaults and `~/.claude/skills/toponymy` before touching stage 04.
 
 ## Decisions so far (2026-09-15)
@@ -163,6 +164,18 @@ refetch it. Stage 01 skips any PubChem batch file that already exists.
   among its description neighbours. Hubs (> 100 reactions) are never partners. The connectivity match also merges
   isotopologues (Glycine-d5 matches glycine) and charge states, by design.
 
+- **Hovercard and colormap names (2026-09-15).** The card is styled by classes in `CUSTOM_CSS` (markup is paid
+  33,008 times; inline styles were not). Context rows are a fixed-width label column so the same fact sits in the
+  same place on every card; the region row is the finest *named* layer (27% of molecules are unlabelled at layer
+  0) and costs 0.56 MB compressed. Neighbour and partner names are clamped in CSS (`.hc-v > span`), never in the
+  data, because the body is also the search text; the plain formula sits in a hidden span for the same reason.
+  Similarity scores show only on the text map (`neighbour_show_similarity`): Tanimoto means something, description
+  cosines all read 0.9. Colormap names are short noun phrases because one string is both the dropdown entry and
+  the rotated colorbar title; the qualifiers moved to the README table. "First stated" stays: label the operation,
+  not the interpretation (ChEBI's role order leans general-first and is not a ranking; "primary" would claim one).
+  Coherence is capped at 0.9995 before rendering because DataMapPlot's colorbar rounds every tick when both ends
+  of the range are integers ("0 0 1 1 1"). The subtitle links to the other map and to the GitHub repo.
+
 ## Data facts (ChEBI-20 as published, fetched 2026-09-15)
 
 - 33,008 rows, all CIDs unique. Description length: median 40 words, p10 25, p90 67, max 166; median 270
@@ -204,6 +217,7 @@ The structure map, the same day: `docs/morgan/index.html` plus its own zips (8.5
 social card. Its 846 regions were named in 8.3 min of Toponymy time on a Runpod RTX 4090 (13.1 min of pod time,
 about $7 of Sonnet 5 by estimate; not measured). The text map was re-rendered with the structure map's 15
 coarsest regions as its "structural family" view (8.45 MB). Stage 04 for the text map was not re-run.
+The hovercard redesign (label/value grid, region row, short colormap names, GitHub link) took both maps to 9.26 MB.
 
 Browser notes (in-app Chromium pane, 800 x 600): the externalised map logs one "deck.gl: assertion failed" (after a
 "Pixel project matrix not invertible" warning) on first paint, before the data zips arrive, and then renders and
